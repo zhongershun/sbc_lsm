@@ -65,7 +65,7 @@ if(CCACHE_FOUND)
 endif(CCACHE_FOUND)
 
 option(WITH_JEMALLOC "build with JeMalloc" OFF)
-option(WITH_LIBURING "build with liburing" ON)
+option(WITH_LIBURING "build with liburing" OFF)
 option(WITH_SNAPPY "build with SNAPPY" OFF)
 option(WITH_LZ4 "build with lz4" OFF)
 option(WITH_ZLIB "build with zlib" OFF)
@@ -910,6 +910,7 @@ set(SOURCES
         utilities/fault_injection_fs.cc
         utilities/fault_injection_secondary_cache.cc
         utilities/leveldb_options/leveldb_options.cc
+        utilities/distribution_generator.cc
         utilities/memory/memory_util.cc
         utilities/merge_operators.cc
         utilities/merge_operators/bytesxor.cc
@@ -1544,6 +1545,12 @@ if(WITH_BENCHMARK_TOOLS)
     cache/cache_bench_tool.cc)
   target_link_libraries(cache_bench${ARTIFACT_SUFFIX}
     ${ROCKSDB_LIB} ${GFLAGS_LIB} ${FOLLY_LIBS})
+
+  add_executable(db_bench_my2
+    tools/db_bench_my2.cc)
+  target_link_libraries(db_bench_my2
+    ${ROCKSDB_LIB} ${GFLAGS_LIB} -lpthread gtest)
+
 
   add_executable(memtablerep_bench${ARTIFACT_SUFFIX}
     memtable/memtablerep_bench.cc)
