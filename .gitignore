@@ -99,3 +99,4 @@ third-party/folly/
 core.*
 
 build*
+test_sh

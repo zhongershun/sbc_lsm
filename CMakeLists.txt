@@ -742,7 +742,6 @@ set(SOURCES
         db/write_batch_base.cc
         db/write_controller.cc
         db/write_thread.cc
-        env/aio/file_op.cc
         env/composite_env.cc
         env/env.cc
         env/env_chroot.cc
@@ -1551,6 +1550,10 @@ if(WITH_BENCHMARK_TOOLS)
     tools/db_bench_my2.cc)
   target_link_libraries(db_bench_my2
     ${ROCKSDB_LIB} ${GFLAGS_LIB} -lpthread gtest)
+
+  add_executable(aio_test
+    tools/aio_test.cc)
+  target_link_libraries(aio_test -lpthread gtest)
 
 
   add_executable(memtablerep_bench${ARTIFACT_SUFFIX}

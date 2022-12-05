@@ -42,12 +42,13 @@ DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
 DEFINE_uint64(data_size, 10ll<<30, "");
-DEFINE_int32(write_rate, 0, "");
-DEFINE_int32(read_rate, 0, "");
-DEFINE_int32(core_num, 2, "");
+DEFINE_int32(write_rate, 100, "");
+DEFINE_int32(read_rate, 100, "");
+DEFINE_int32(scan_rate, 100, "");
+DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 1000000, "");
-DEFINE_int32(workloads, 7, "0: TestBasic, 1: TestReadBasic, 2: bull, 3: TestLatency"); // 0: subcompaction, 1: throughput, 2: get duration
+DEFINE_int32(workloads, 6, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe, ");
 DEFINE_uint64(cache_size, 0, "");
@@ -56,6 +57,7 @@ DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
+DEFINE_bool(disable_auto_compactions, true, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -656,6 +658,7 @@ void TestMixWorkload() {
   FLAGS_create_new_db = true;
   data_size = 100ul << 20;
   key_num = data_size / (value_size+22ll);
+  FLAGS_read_count = 10000;
   // key_per_client = key_num / client_num;
 #endif
 
@@ -675,9 +678,13 @@ void TestMixWorkload() {
   auto hist_write = std::make_shared<HistogramImpl>();
   auto hist_read = std::make_shared<HistogramImpl>();
   auto hist_insert = std::make_shared<HistogramImpl>();
+  auto hist_scan = std::make_shared<HistogramImpl>();
   hist_.insert({kWrite, std::move(hist_write)});
   hist_.insert({kRead, std::move(hist_read)});
+  hist_.insert({kScan, std::move(hist_scan)});
   hist_.insert({kInsert, std::move(hist_insert)});
+
+  // 测试数据库能不能打开，不能打开就要重新插数据
   DB *db_tmp = nullptr;
   Options opt_tmp;
   Status s_tmp = DB::Open(opt_tmp, DBPath, &db_tmp);
@@ -695,7 +702,7 @@ void TestMixWorkload() {
 
   if(FLAGS_disableWAL){
     options.write_buffer_size = 100ll << 30;
-    options.disable_auto_compactions = true;
+    options.disable_auto_compactions = FLAGS_disable_auto_compactions;
     options.level0_file_num_compaction_trigger = 1000000;
     options.level0_slowdown_writes_trigger = 1000000;
     options.level0_stop_writes_trigger = 1000000;
@@ -711,9 +718,7 @@ void TestMixWorkload() {
   auto s = DB::Open(options, DBPath, &db);
   std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
 
-
-
-  auto ReadWrite = [&](size_t min, size_t max, int idx, int read, int write){
+  auto ReadWrite = [&](size_t min, size_t max, int idx, int read, int write, int scan){
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     // 绑定到0-4核心
@@ -725,17 +730,19 @@ void TestMixWorkload() {
     unsigned long seed_;
     Random rnd(301);
     std::default_random_engine gen;
-    std::uniform_int_distribution<int> op_gen(0, write+read-1); // 闭区间
+    std::uniform_int_distribution<int> op_gen(0, write+read+scan-1); // 闭区间
 
     std::default_random_engine gen_key;
 
 
     std::uniform_int_distribution<size_t> key_gen_uniform(min, max);
+    UniformGenerator scan_len_uniform(10, 1000);
     ZipfianGenerator key_gen_zipfian(min, max);
 
     gen.seed(read+write);
     size_t w_count = 0;
     size_t r_count = 0;
+    size_t scan_count = 0;
     char buf[100];
     
     while(op_count_>0) {
@@ -759,13 +766,24 @@ void TestMixWorkload() {
         auto end_ = std::chrono::system_clock::now();
         w_count++;
         hist_[kWrite]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
-      } else {
+      } else if(op<read+write) {
         std::string value;
         auto start_ = std::chrono::system_clock::now();
         db->Get(ReadOptions(), Slice(buf, 12), &value);
         auto end_ = std::chrono::system_clock::now();
         hist_[kRead]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
         r_count++;
+      } else {
+        auto iter = db->NewIterator(ReadOptions());
+        iter->Seek(Slice(buf, 12));
+        int scan_len = scan_len_uniform.Next();
+        auto start_ = std::chrono::system_clock::now();
+        for (int i = 0; i < scan_len && iter->Valid(); i++) {
+          iter->Next();
+        }
+        auto end_ = std::chrono::system_clock::now();
+        hist_[kScan]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+        scan_count++;
       }
       op_count_list[idx]++;
       op_count_.fetch_sub(1, std::memory_order_relaxed);
@@ -797,15 +815,14 @@ void TestMixWorkload() {
     cpu_set.push_back(core_name_list[i]);
   }
   
-  
-
   for (size_t i = 0; i < cpu_set.size(); i++) {
     CPUStat::get_cpuoccupy((CPUStat::CPU_OCCUPY *)&cpu_stat1[i], cpu_set[i].c_str());
   }
+
   // Workload start
   auto start = std::chrono::system_clock::now();
   for (size_t i = 0; i < client_num; i++) {
-    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, FLAGS_read_rate, FLAGS_write_rate));
+    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, FLAGS_read_rate, FLAGS_write_rate, FLAGS_scan_rate));
   }
   // Statistic CPU
   std::thread cpu_rec = std::thread(CPUStat::GetCPUStatMs, cpu_set);
@@ -819,6 +836,7 @@ void TestMixWorkload() {
     client_threads[i].join();
   }
   CPUStat::run = false;
+  IOStat::run = false;
   cpu_rec.join();
   io_stat.join();
 
@@ -988,11 +1006,13 @@ void TestIOStat() {
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  if(FLAGS_workloads == 6){
+  if(FLAGS_workloads == 4){
     std::cout << FLAGS_workloads <<"TestReadWrite\n";
     rocksdb::TestReadWrite();
   } else if(FLAGS_workloads == 5) {
     rocksdb::TestReadOnly();
+  } else if(FLAGS_workloads == 6) {
+    rocksdb::TestMixWorkload();
   } else if(FLAGS_workloads == 7) {
     rocksdb::TestIOStat();
   } else {

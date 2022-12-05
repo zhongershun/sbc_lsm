@@ -13,6 +13,11 @@
 #include <errno.h>
 #include <stddef.h>
 #include <assert.h>
+#include <time.h>
+#include <sys/time.h>
+
+#include "gtest/gtest.h"
+
 
 namespace TAIO{
 
@@ -150,6 +155,21 @@ class IOContext {
     return ret;
   }
 
+  int SubmitTasks(IOTask **task, int task_num) {
+    struct iocb *cbs[1024];
+    for (int i = 0; i < task_num; i++) {
+      cbs[i] = &task[i]->iocb_;
+    }
+    int ret = syscall(__NR_io_submit, ioctx_, task_num, cbs);
+
+    if (ret != task_num) {
+       if (ret < 0) perror("io_submit");
+       else fprintf(stderr, "io_submit only submitted %d\n", ret);
+    }
+    io_event_cnt_ += ret;
+    return ret;
+  }
+
   int Cancel(IOTask *task, struct io_event *result) {
     return syscall(__NR_io_cancel, ioctx_, task->iocb_, result);
   }
@@ -268,6 +288,15 @@ ssize_t submit_pwrite(int fd, const void *buf, size_t count, off_t offset, IOTas
   return ret;
 }
 
+ssize_t submit_pwrites(IOTask **iotasks, int task_num, IOContext *ioctx) {
+  int64_t ret = -1;
+  assert(iotask != nullptr);
+  assert(ioctx != nullptr);
+  ret = ioctx->SubmitTasks(iotasks, task_num);
+
+  return ret;
+}
+
 ssize_t preadv(int fd, const struct ::iovec *iov, int iovcnt, off_t offset, IOTask *iotask, IOContext *ioctx) {
   int64_t ret = -1;
   iotask->PrepPreadv(fd, iov, iovcnt, offset);
@@ -324,17 +353,23 @@ int fsync(int fd, IOTask *iotask, IOContext *ioctx) {
 
 }
 
+namespace {
 
-static int kAlignSize = 512;
-static int kIoSize = 1024;
-static int kIoCount = 4096;
-
-void AsyncWrite() {
+static inline int64_t GetUnixTimeUs() {
+  struct timeval tp;
+  gettimeofday(&tp, nullptr);
+  return (((int64_t) tp.tv_sec) * 1000000 + (int64_t) tp.tv_usec);
+}
 
 }
 
-void AsyncRead() {
-  std::string file_ = "aio_test_file";
+
+static int kAlignSize = 512;
+static int kIoSize = 4096;
+static int kIoCount = 4096;
+
+void AsyncWriteSingle(int64_t i=1) {
+  std::string file_ = "aio_test_file_single";
   int fd_ = -1;
   char *write_buf_ = nullptr;
   char *read_buf_ = nullptr;
@@ -346,13 +381,307 @@ void AsyncRead() {
     kIoSize = kAlignSize;
   }
 
+  if(posix_memalign((void **)&write_buf_, kAlignSize, kIoSize * kIoCount) != 0) {
+    std::cout << "Alloc mem failed!\n";
+    abort();
+  }
+
+
+  struct io_event events[64];
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 100000000;  // this thread will be blocked at most 100 milliseconds
+  memset(events, 0, sizeof(events));
+
+  TAIO::IOTask *iotask = new TAIO::IOTask();
+  TAIO::IOContext *ioctx = new TAIO::IOContext();
+  int64_t offset = i * kIoSize;
+  char *wbuf = &write_buf_[offset];
+
+  ioctx->Setup(64);
+    
+  auto write_start = GetUnixTimeUs();
+  int ret = submit_pwrite(fd_, wbuf, kIoSize, offset, iotask, ioctx);
+
+  while (true) {
+    ret = ioctx->GetEvents(events, 1, 1, &ts);
+
+    if (ret < 0) {
+      printf("io_getevents error: %d\n", ret);
+      break;
+    }
+    if (ret > 0) {
+      // res2 代表写入了多少数据
+      ((TAIO::io_callback_t *)(events[0].data))((struct iocb *)events[0].obj, events[0].res, events[0].res2);
+      printf("result, res2: %lld, res: %lld, task IO size: %ld\n", 
+        events[0].res2, events[0].res, iotask->FinishedIOSize());
+      ret = events[0].res;
+      break;
+    }
+  }
+  std::cout << "Write:" << kIoSize << " Bytes, " << GetUnixTimeUs() - write_start << " us\n";
+  assert(ret == kIoSize);
+  ioctx->Destroy();
+
+  free(write_buf_);
+  close(fd_);
+  delete iotask;
+  delete ioctx;
+}
+
+// 一个一个发IO请求
+void AsyncWriteMultiSyscall(int io_num=1) {
+  std::string file_ = "aio_test_file_single";
+  int fd_ = -1;
+  char *write_buf_ = nullptr;
+  char *read_buf_ = nullptr;
+
+  io_num = std::min(io_num, 64);
+
+  fd_ = open(file_.c_str(), O_RDWR | O_CREAT | O_DIRECT, 0644);
+  assert(fd_ > 0);
+
+  if (kIoSize < kAlignSize) {
+    kIoSize = kAlignSize;
+  }
+
+  if(posix_memalign((void **)&write_buf_, kAlignSize, kIoSize * kIoCount) != 0) {
+    std::cout << "Alloc write buf mem failed!\n";
+    abort();
+  }
+  if(posix_memalign((void **)&read_buf_, kAlignSize, kIoSize * kIoCount) != 0) {
+    std::cout << "Alloc read buf mem failed!\n";
+    abort();
+  }
+
+  for (int i = 0; i < kIoSize * kIoCount; ++i) {
+    (write_buf_)[i] = ('a' + i%26);
+  }
+
+  struct io_event events[64];
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 100000000;  // this thread will be blocked at most 100 milliseconds
+  memset(events, 0, sizeof(events));
+
+  TAIO::IOTask *iotasks[1024];
+  TAIO::IOContext *ioctx = new TAIO::IOContext();
+
+  
+  char *wbuf = write_buf_;
+
+  ioctx->Setup(100);
+  
+  auto write_start = GetUnixTimeUs();
+  int ret = 0;
+  for (int i = 0; i < io_num; i++) {
+    int64_t offset = i * kIoSize;
+    iotasks[i] = new TAIO::IOTask();
+    ret = submit_pwrite(fd_, wbuf+offset, kIoSize, offset, iotasks[i], ioctx);
+  }
+  auto submit_finished = GetUnixTimeUs();
+  while (true) {
+    ret = ioctx->GetEvents(events, 0, 64, &ts);
+
+    if (ret < 0) {
+      printf("io_getevents error: %d\n", ret);
+      break;
+    }
+    if (ret > 0) {
+      for (struct io_event *e = &events[0]; e < &events[ret]; ++e) {
+        ((TAIO::io_callback_t *)(e->data))((struct iocb *)e->obj, e->res, e->res2);
+      }
+    }
+    int io_finished = 0;
+    for (int i = 0; i < io_num; i++)
+    {
+      if (iotasks[i]->IsDone())
+      {
+        io_finished++;
+      }
+    }
+    if(io_finished == io_num){
+      break;
+    }
+    
+  }
+  auto write_finished = GetUnixTimeUs();
+
+  std::cout << "Write:" << kIoSize * io_num << " Bytes, " << write_finished - write_start << " us, Syscall dur: " <<  submit_finished - write_start << "us\n";
+
+
+  TAIO::IOTask *iotask = new TAIO::IOTask();
+  char *rbuf = &read_buf_[0];
+  ret = submit_pread(fd_, rbuf, kIoSize*io_num, 0, iotask, ioctx);
+  auto read_start = GetUnixTimeUs();
+  while (true) {
+    ret = ioctx->GetEvents(events, 1, 1, &ts);
+
+    if (ret < 0) {
+      printf("io_getevents error: %d\n", ret);
+      break;
+    }
+    if (ret > 0) {
+      // res2 代表写入了多少数据
+      ((TAIO::io_callback_t *)(events[0].data))((struct iocb *)events[0].obj, events[0].res, events[0].res2);
+      printf("Read finished, res2: %lld, res: %lld, task IO size: %ld\n", 
+        events[0].res2, events[0].res, iotask->FinishedIOSize());
+      ret = events[0].res;
+      break;
+    }
+  }
+  std::cout << "Read:" << ret << " Bytes, " << GetUnixTimeUs() - read_start << " us\n";
+
+  for (int i = 0; i < ret; i++)
+  {
+    if(wbuf[i] != rbuf[i]) {
+      std::cout << i << ", " << wbuf[i] << ", " << rbuf[i] << "\n";
+      break;
+    }
+  }
+
+  ASSERT_EQ(ret, io_num*kIoSize);
+  ASSERT_EQ(memcmp(wbuf, rbuf, ret), 0);
   
 
+  ioctx->Destroy();
+  free(write_buf_);
+  close(fd_);
 }
 
 
+// 一次把所有的IO请求发完
+void AsyncWriteMultiSyscallBatch(int io_num=1) {
+  std::string file_ = "aio_test_file_single";
+  int fd_ = -1;
+  char *write_buf_ = nullptr;
+  char *read_buf_ = nullptr;
 
-int main() {
+  io_num = std::min(io_num, 64);
 
+  fd_ = open(file_.c_str(), O_RDWR | O_CREAT | O_DIRECT, 0644);
+  assert(fd_ > 0);
+
+  if (kIoSize < kAlignSize) {
+    kIoSize = kAlignSize;
+  }
+
+  if(posix_memalign((void **)&write_buf_, kAlignSize, kIoSize * kIoCount) != 0) {
+    std::cout << "Alloc write buf mem failed!\n";
+    abort();
+  }
+  if(posix_memalign((void **)&read_buf_, kAlignSize, kIoSize * kIoCount) != 0) {
+    std::cout << "Alloc read buf mem failed!\n";
+    abort();
+  }
+
+  for (int i = 0; i < kIoSize * kIoCount; ++i) {
+    (write_buf_)[i] = ('a' + i%26);
+  }
+
+  struct io_event events[64];
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 100000000;  // this thread will be blocked at most 100 milliseconds
+  memset(events, 0, sizeof(events));
+
+  TAIO::IOTask *iotasks[1024];
+  TAIO::IOContext *ioctx = new TAIO::IOContext();
+
+  char *wbuf = write_buf_;
+
+  ioctx->Setup(100);
+  
+  auto write_start = GetUnixTimeUs();
+  int ret = 0;
+  for (int i = 0; i < io_num; i++) {
+    int64_t offset = i * kIoSize;
+    iotasks[i] = new TAIO::IOTask();
+    iotasks[i]->PrepPwrite(fd_, wbuf+offset, kIoSize, offset);
+    // ret = submit_pwrites(fd_, wbuf+offset, kIoSize, offset, iotasks[i], ioctx);
+  }
+  ret = TAIO::submit_pwrites(iotasks, io_num, ioctx);
+  auto submit_finished = GetUnixTimeUs();
+  while (true) {
+    ret = ioctx->GetEvents(events, 0, 64, &ts);
+
+    if (ret < 0) {
+      printf("io_getevents error: %d\n", ret);
+      break;
+    }
+    if (ret > 0) {
+      for (struct io_event *e = &events[0]; e < &events[ret]; ++e) {
+        ((TAIO::io_callback_t *)(e->data))((struct iocb *)e->obj, e->res, e->res2);
+      }
+    }
+    int io_finished = 0;
+    for (int i = 0; i < io_num; i++)
+    {
+      if (iotasks[i]->IsDone())
+      {
+        io_finished++;
+      }
+    }
+    if(io_finished == io_num){
+      break;
+    }
+    
+  }
+  auto write_finished = GetUnixTimeUs();
+
+  std::cout << "Write:" << kIoSize * io_num << " Bytes, " << write_finished - write_start << " us, Syscall dur: " <<  submit_finished - write_start << "us\n";
+
+
+  TAIO::IOTask *iotask = new TAIO::IOTask();
+  char *rbuf = &read_buf_[0];
+  ret = submit_pread(fd_, rbuf, kIoSize*io_num, 0, iotask, ioctx);
+  auto read_start = GetUnixTimeUs();
+  while (true) {
+    ret = ioctx->GetEvents(events, 1, 1, &ts);
+
+    if (ret < 0) {
+      printf("io_getevents error: %d\n", ret);
+      break;
+    }
+    if (ret > 0) {
+      // res2 代表写入了多少数据
+      ((TAIO::io_callback_t *)(events[0].data))((struct iocb *)events[0].obj, events[0].res, events[0].res2);
+      printf("Read finished, res2: %lld, res: %lld, task IO size: %ld\n", 
+        events[0].res2, events[0].res, iotask->FinishedIOSize());
+      ret = events[0].res;
+      break;
+    }
+  }
+  std::cout << "Read:" << ret << " Bytes, " << GetUnixTimeUs() - read_start << " us\n";
+
+  for (int i = 0; i < ret; i++)
+  {
+    if(wbuf[i] != rbuf[i]) {
+      std::cout << i << ", " << wbuf[i] << ", " << rbuf[i] << "\n";
+      break;
+    }
+  }
+
+  ASSERT_EQ(ret, io_num*kIoSize);
+  ASSERT_EQ(memcmp(wbuf, rbuf, ret), 0);
+  
+
+  ioctx->Destroy();
+  free(write_buf_);
+  close(fd_);
+}
+
+
+int main(int argc, char **argv) {
+  for (int i = 0; i < argc; i++)
+  {
+    std::cout << argv[i] << "\n";
+  }
+  int io_num = 10;
+  if(argc > 1) {
+    io_num = std::stoi(argv[1]);
+  }
+  
+  AsyncWriteMultiSyscallBatch(io_num);
   return 0;
 }
