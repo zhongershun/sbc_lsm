@@ -49,7 +49,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 1000000, "");
-DEFINE_int32(workloads, 6, ""); 
+DEFINE_int32(workloads, 8, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe, ");
 DEFINE_uint64(cache_size, 0, "");
@@ -777,7 +777,7 @@ void TestMixWorkload() {
 
   Options options;
   options.use_direct_reads = true;
-options.disable_auto_compactions = FLAGS_disable_auto_compactions;
+  options.disable_auto_compactions = FLAGS_disable_auto_compactions;
   std::atomic<int64_t> op_count_;
   size_t op_count_list[100];
 
@@ -1305,6 +1305,31 @@ void TestWidthCompactions() {
 
 }
 
+ void TestCPUMicros() {
+  uint64_t count = 10000000;
+  Env *env = Env::Default();
+  uint64_t now_cpu_micros;
+  SystemClock *clock = env->GetSystemClock().get();
+
+  uint64_t prev_cpu_micros = clock->CPUMicros();
+  auto start_ = std::chrono::system_clock::now();
+  for (volatile size_t i = 0; i < count; i++)
+  {}
+  now_cpu_micros = clock->CPUMicros();
+  auto end_ = std::chrono::system_clock::now();
+  std::cout << "Used_cpu_micros | volatile for | CPU Micros: " << now_cpu_micros - prev_cpu_micros 
+    << " us, Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << " us\n";
+
+  prev_cpu_micros = clock->CPUMicros();
+  start_ = std::chrono::system_clock::now();
+  sleep(1);
+  now_cpu_micros = clock->CPUMicros();
+  end_ = std::chrono::system_clock::now();
+  std::cout << "Used_cpu_micros | Sleep | CPU Micros: " << now_cpu_micros - prev_cpu_micros 
+    << " us, Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << " us\n";
+
+ }
+
 
 }  // namespace ROCKSDB_NAMESPACE
 
@@ -1322,6 +1347,8 @@ int main(int argc, char** argv) {
     rocksdb::TestMixWorkload();
   } else if(FLAGS_workloads == 7) {
     rocksdb::TestIOStat();
+  } else if(FLAGS_workloads == 8) {
+    rocksdb::TestCPUMicros();
   } else {
     std::cout << "Error workload: " << FLAGS_workloads <<" workload\n";
   }
