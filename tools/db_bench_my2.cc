@@ -15,7 +15,6 @@
 #include "rocksdb/sst_file_writer.h"
 #include "rocksdb/utilities/convenience.h"
 #include "rocksdb/db.h"
-// #include "test_util/sync_point.h"
 #include "util/concurrent_task_limiter_impl.h"
 #include "util/random.h"
 #include "utilities/fault_injection_env.h"
@@ -26,6 +25,8 @@
 #include "util/io_info.h"
 #include "monitoring/histogram.h"
 #include "utilities/distribution_generator.h"
+#include "monitoring/iostats_context_imp.h"
+#include "monitoring/thread_status_util.h"
 
 #include <gflags/gflags.h>
 #include "sys/time.h"
@@ -42,7 +43,7 @@
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
-DEFINE_uint64(data_size, 10ll<<30, "");
+DEFINE_uint64(data_size, 1ll<<30, "");
 DEFINE_int32(write_rate, 100, "");
 DEFINE_int32(read_rate, 100, "");
 DEFINE_int32(scan_rate, 100, "");
@@ -82,7 +83,10 @@ enum OperationType : unsigned char {
   kOthers,
   kRMW,
   kInsert,
-  kScan
+  kScan,
+  kTailRead,
+  kTailReadCPU,
+  kTailReadIO
 };
 
 std::string NumberToString(uint64_t num) {
@@ -422,6 +426,7 @@ void TestReadOnly() {
 
 }
 
+
 void TestReadWrite() {
   // cpu_set_t cpuset;
   // CPU_ZERO(&cpuset);
@@ -709,6 +714,7 @@ void InsertData(Options options_ins, std::string DBPath, size_t key_num,
   std::cout << "Create a new DB finished!\n";
 }
 
+
 void TestMixWorkload() {
   // cpu_set_t cpuset;
   // CPU_ZERO(&cpuset);
@@ -722,7 +728,7 @@ void TestMixWorkload() {
   options_ins.create_if_missing = true;  
   DB* db = nullptr;
 
-  std::string DBPath = "./rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
+  std::string DBPath = "./rocksdb_bench_my_mix_10GB_" + std::to_string(FLAGS_value_size);
   uint64_t data_size = FLAGS_data_size;
   size_t value_size = FLAGS_value_size;
   size_t client_num = FLAGS_client_num;
@@ -759,12 +765,19 @@ void TestMixWorkload() {
   auto hist_read = std::make_shared<HistogramImpl>();
   auto hist_insert = std::make_shared<HistogramImpl>();
   auto hist_scan = std::make_shared<HistogramImpl>();
+  auto hist_tail_read = std::make_shared<HistogramImpl>();
+  auto hist_tail_read_cpu = std::make_shared<HistogramImpl>();
+  auto hist_tail_read_io = std::make_shared<HistogramImpl>();
+
   hist_.insert({kWrite, std::move(hist_write)});
   hist_.insert({kRead, std::move(hist_read)});
   hist_.insert({kScan, std::move(hist_scan)});
   hist_.insert({kInsert, std::move(hist_insert)});
+  hist_.insert({kTailRead, std::move(hist_tail_read)});
+  hist_.insert({kTailReadCPU, std::move(hist_tail_read_cpu)});
+  hist_.insert({kTailReadIO, std::move(hist_tail_read_io)});
 
-  // 测试数据库能不能打开，不能打开就要重新插数据
+  // 判断数据库能不能打开，不能打开就要重新插数据
   DB *db_tmp = nullptr;
   Options opt_tmp;
   Status s_tmp = DB::Open(opt_tmp, DBPath, &db_tmp);
@@ -820,7 +833,51 @@ void TestMixWorkload() {
     UniformGenerator scan_len_uniform(10, 1000);
     ZipfianGenerator key_gen_zipfian(min, max);
 
-    // gen.seed(read+write);
+    Env *env = Env::Default();
+    SystemClock *clock = env->GetSystemClock().get();
+    // [cnt, dur, cpu, io]
+    std::vector<std::vector<uint64_t>> hist_lat_ = {
+      {1, 0, 0, 0},     // [000, 250) us
+      {1, 0, 0, 0},     // [250-500) us
+      {1, 0, 0, 0},     // [500-750) us
+      {1, 0, 0, 0},     // [750-1000) us
+      {1, 0, 0, 0},     // [1000, +inf) us
+    };
+    uint64_t prev_cpu_micros;
+    uint64_t now_cpu_micros;
+
+    uint64_t dur_write_nanos = 0;
+    uint64_t dur_fsync_nanos = 0;
+    uint64_t dur_range_sync_nanos = 0;
+    uint64_t dur_prepare_write_nanos = 0;
+    uint64_t dur_cpu_write_nanos = 0;
+    uint64_t dur_cpu_read_nanos = 0;
+
+    uint64_t prev_read_nanos = 0;
+    uint64_t prev_write_nanos = 0;
+    uint64_t prev_fsync_nanos = 0;
+    uint64_t prev_range_sync_nanos = 0;
+    uint64_t prev_prepare_write_nanos = 0;
+    uint64_t prev_cpu_write_nanos = 0;
+    uint64_t prev_cpu_read_nanos = 0;
+
+    uint64_t now_read_nanos = 0;
+    uint64_t now_write_nanos = 0;
+    uint64_t now_fsync_nanos = 0;
+    uint64_t now_range_sync_nanos = 0;
+    uint64_t now_prepare_write_nanos = 0;
+    uint64_t now_cpu_write_nanos = 0;
+    uint64_t now_cpu_read_nanos = 0;
+    if (true) {
+      SetPerfLevel(PerfLevel::kEnableTimeAndCPUTimeExceptForMutex);
+      prev_write_nanos = IOSTATS(write_nanos);
+      prev_fsync_nanos = IOSTATS(fsync_nanos);
+      prev_range_sync_nanos = IOSTATS(range_sync_nanos);
+      prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+      prev_cpu_write_nanos = IOSTATS(cpu_write_nanos);
+      prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
+    }
+
     gen_key.seed(idx);
     size_t w_count = 0;
     size_t r_count = 0;
@@ -847,13 +904,51 @@ void TestMixWorkload() {
         db->Put(wo, Slice(buf, 12), value_t);
         auto end_ = std::chrono::system_clock::now();
         w_count++;
-        hist_[kWrite]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+        auto dur_ = std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count();
+        hist_[kWrite]->Add(dur_);
       } else if(op<read+write) {
         std::string value;
         auto start_ = std::chrono::system_clock::now();
+        prev_read_nanos = IOSTATS(read_nanos);
+        prev_write_nanos = IOSTATS(write_nanos);
+        prev_fsync_nanos = IOSTATS(fsync_nanos);
+        prev_range_sync_nanos = IOSTATS(range_sync_nanos);
+        prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+        prev_cpu_write_nanos = IOSTATS(cpu_write_nanos);
+        prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
+        prev_cpu_micros = clock->CPUMicros();
         db->Get(ReadOptions(), Slice(buf, 12), &value);
+        now_cpu_micros = clock->CPUMicros();
         auto end_ = std::chrono::system_clock::now();
-        hist_[kRead]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+        now_read_nanos = IOSTATS(read_nanos);
+        now_write_nanos = IOSTATS(write_nanos);
+        now_fsync_nanos = IOSTATS(fsync_nanos);
+        now_range_sync_nanos = IOSTATS(range_sync_nanos);
+        now_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+        now_cpu_write_nanos = IOSTATS(cpu_write_nanos);
+        now_cpu_read_nanos = IOSTATS(cpu_read_nanos);
+        
+        auto dur_ = std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count();
+
+        uint64_t io_dur = now_read_nanos + now_cpu_read_nanos + now_cpu_write_nanos + now_prepare_write_nanos + now_range_sync_nanos + now_fsync_nanos + now_write_nanos - 
+            (prev_read_nanos + prev_cpu_read_nanos + prev_cpu_write_nanos + prev_prepare_write_nanos + prev_range_sync_nanos + prev_fsync_nanos + prev_write_nanos);
+        io_dur /= 1000; // ns -> us
+        int idx_ = dur_ / 250;
+        if(idx_ < 4) {
+          hist_lat_[idx_][0]++;
+          hist_lat_[idx_][1] += dur_;
+          hist_lat_[idx_][2] += (now_cpu_micros - prev_cpu_micros);
+          hist_lat_[idx_][3] += io_dur;
+        } else {
+          hist_[kTailRead]->Add(dur_);
+          hist_[kTailReadCPU]->Add(now_cpu_micros - prev_cpu_micros);
+          hist_[kTailReadIO]->Add(io_dur);
+          hist_lat_[4][0]++;
+          hist_lat_[4][1] += dur_;
+          hist_lat_[4][2] += (now_cpu_micros - prev_cpu_micros);
+          hist_lat_[4][3] += io_dur;
+        }
+        hist_[kRead]->Add(dur_);
         r_count++;
       } else {
         auto iter = db->NewIterator(ReadOptions());
@@ -871,6 +966,12 @@ void TestMixWorkload() {
       op_count_.fetch_sub(1, std::memory_order_relaxed);
     }
     std::cout<<"Thread: " << idx <<", Write:Read (" << w_count<<", "<<r_count<<")\n";
+    for (size_t i = 0; i < hist_lat_.size(); i++) {
+      std::cout << "[" << i*250 << ", " << (i+1)*250 
+        << "), Tail AVG: " << hist_lat_[i][1] / hist_lat_[i][0] 
+        << " us, CPU: " << hist_lat_[i][2] / hist_lat_[i][0] 
+        << " us, IO: " << hist_lat_[i][3] / hist_lat_[i][0] << " us\n";
+    }
   };
   
   std::string core_name_list[10] = {
@@ -934,6 +1035,9 @@ void TestMixWorkload() {
   std::cout << "Read: " << hist_[kRead]->ToString() << "\n";
   std::cout << "Write: " << hist_[kWrite]->ToString() << "\n";
   std::cout << "Scan: " << hist_[kScan]->ToString() << "\n";
+  std::cout << "TailRead: " << hist_[kTailRead]->ToString() << "\n";
+  std::cout << "TailReadCPU: " << hist_[kTailReadCPU]->ToString() << "\n";
+  std::cout << "TailReadIO: " << hist_[kTailReadIO]->ToString() << "\n";
 
 }
 
@@ -1305,7 +1409,122 @@ void TestWidthCompactions() {
 
 }
 
- void TestCPUMicros() {
+int WriteFile(std::string file_name, int file_size = 500 << 20) {
+  std::ofstream outFile(file_name.c_str(), std::ios::out | std::ios::binary);
+
+  if (!outFile) {
+      std::cout << "无法打开文件: " << file_name << std::endl;
+      return 1;
+  }
+  // 写入文件内容
+  const int BUFFER_SIZE = 1024 * 1024; // 每次写入1MB
+  char buffer[BUFFER_SIZE];
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+      buffer[i] = 'A';
+  }
+  int bytesWritten = 0;
+  while (bytesWritten < file_size) {
+      int bytesToWrite = std::min(file_size - bytesWritten, BUFFER_SIZE);
+      outFile.write(buffer, bytesToWrite);
+      bytesWritten += bytesToWrite;
+  }
+  outFile.flush();
+  std::cout << "Write file: " << file_name << ", Size: " << file_size/(1<<20) << " MB" << std::endl;
+  // 关闭文件
+  outFile.close();
+  return 0;
+}
+
+int ReadFile(std::string file_name, int file_size = 500 << 20) {
+  std::ifstream inFile(file_name.c_str(), std::ios::in | std::ios::binary);
+
+  if (!inFile) {
+      std::cout << "无法打开文件" << file_name << std::endl;
+      return 1;
+  }
+  // 获取文件大小
+  inFile.seekg(0, std::ios::end);
+  int fileSize = inFile.tellg();
+  inFile.seekg(0, std::ios::beg);
+
+  if (fileSize > file_size) {
+      fileSize = file_size;
+  }
+  // 读取文件内容
+  char* buffer = new char[fileSize];
+  inFile.read(buffer, fileSize);
+  // 输出读取的内容
+  std::cout << "读取了 " << fileSize/(1<<20) << " MB的文件内容：" << std::endl;
+  // 关闭文件和释放内存
+  inFile.close();
+  delete[] buffer;
+  return 0;
+}
+
+int DirectIO(std::string file_name, int file_size = 10 << 20){
+  // 打开文件
+  int fd = open(file_name.c_str(), O_RDWR | O_DIRECT | O_SYNC, 0666);
+  if (fd == -1) {
+      std::cerr << "Failed to open file " << file_name << std::endl;
+      return 1;
+  }
+  // 分配内存缓冲区
+  char* buffer;
+  const size_t kBufferSize = 1024*1024;
+
+  if (posix_memalign((void**)&buffer, kBufferSize, kBufferSize) != 0) {
+      std::cerr << "Failed to allocate buffer" << std::endl;
+      close(fd);
+      return 1;
+  }
+  // 写入文件
+  for (size_t i = 0; i < kBufferSize; ++i) {
+      buffer[i] = 'A' + (i % 26);
+  }
+  off_t offset = 0;
+  auto write_fn = [&] () -> ssize_t {
+    auto start_ = std::chrono::system_clock::now();
+    ssize_t ret = pwrite(fd, buffer, kBufferSize, offset);
+    auto end_ = std::chrono::system_clock::now();
+    IOSTATS_ADD(write_nanos, std::chrono::duration_cast<std::chrono::nanoseconds>(end_-start_).count());
+    return ret;
+  };
+  while (offset < file_size) {
+      ssize_t ret = write_fn();
+      if (ret == -1) {
+          std::cerr << "Failed to write to file" << std::endl;
+          free(buffer);
+          close(fd);
+          return 1;
+      }
+      offset += kBufferSize;
+  }
+  // 读取文件
+  offset = 0;
+  auto read_fn = [&] () -> ssize_t {  
+    auto start_ = std::chrono::system_clock::now();
+    ssize_t ret = pread(fd, buffer, kBufferSize, offset);
+    auto end_ = std::chrono::system_clock::now();
+    IOSTATS_ADD(read_nanos, std::chrono::duration_cast<std::chrono::nanoseconds>(end_-start_).count());
+    return ret;
+  };
+  while (offset < file_size) {
+      ssize_t ret = read_fn();
+      if (ret == -1) {
+          std::cerr << "Failed to read from file" << std::endl;
+          free(buffer);
+          close(fd);
+          return 1;
+      }
+      offset += kBufferSize;
+  }
+  // 释放缓冲区和关闭文件
+  free(buffer);
+  close(fd);
+  return 0;
+}
+
+void TestCPUMicros() {
   uint64_t count = 10000000;
   Env *env = Env::Default();
   uint64_t now_cpu_micros;
@@ -1327,6 +1546,47 @@ void TestWidthCompactions() {
   end_ = std::chrono::system_clock::now();
   std::cout << "Used_cpu_micros | Sleep | CPU Micros: " << now_cpu_micros - prev_cpu_micros 
     << " us, Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << " us\n";
+
+  uint64_t prev_read_nanos = 0;
+  uint64_t prev_write_nanos = 0;
+  uint64_t prev_fsync_nanos = 0;
+  uint64_t prev_range_sync_nanos = 0;
+  uint64_t prev_prepare_write_nanos = 0;
+  uint64_t prev_cpu_write_nanos = 0;
+  uint64_t prev_cpu_read_nanos = 0;
+
+  uint64_t now_read_nanos = 0;
+  uint64_t now_write_nanos = 0;
+  uint64_t now_fsync_nanos = 0;
+  uint64_t now_range_sync_nanos = 0;
+  uint64_t now_prepare_write_nanos = 0;
+  uint64_t now_cpu_write_nanos = 0;
+  uint64_t now_cpu_read_nanos = 0;
+
+  prev_read_nanos = IOSTATS(read_nanos);
+  prev_write_nanos = IOSTATS(write_nanos);
+  prev_fsync_nanos = IOSTATS(fsync_nanos);
+  prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+  prev_cpu_write_nanos = IOSTATS(cpu_write_nanos);
+  prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
+  prev_cpu_micros = clock->CPUMicros();
+  start_ = std::chrono::system_clock::now();
+  // sleep(1);
+  DirectIO("test1"); 
+  now_cpu_micros = clock->CPUMicros();
+  end_ = std::chrono::system_clock::now();
+  now_read_nanos = IOSTATS(read_nanos);
+  now_write_nanos = IOSTATS(write_nanos);
+  now_fsync_nanos = IOSTATS(fsync_nanos);
+  now_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+  now_cpu_write_nanos = IOSTATS(cpu_write_nanos);
+  now_cpu_read_nanos = IOSTATS(cpu_read_nanos);
+  uint64_t io_dur = now_read_nanos + now_cpu_read_nanos + now_cpu_write_nanos + now_prepare_write_nanos + now_range_sync_nanos + now_fsync_nanos + now_write_nanos - 
+    (prev_read_nanos + prev_cpu_read_nanos + prev_cpu_write_nanos + prev_prepare_write_nanos + prev_range_sync_nanos + prev_fsync_nanos + prev_write_nanos);
+  io_dur /= 1000; // ns -> us
+  std::cout << "Used_cpu_micros | Write | CPU Micros: " << now_cpu_micros - prev_cpu_micros 
+    << " us, Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count()
+    << " us, IO dur: " << io_dur << " us\n";
 
  }
 
