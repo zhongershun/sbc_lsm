@@ -16,6 +16,7 @@
 #include <set>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "db/blob/blob_counting_iterator.h"
 #include "db/blob/blob_file_addition.h"
@@ -639,11 +640,29 @@ Status CompactionJob::Run() {
     thread.join();
   }
 
+  uint64_t read_io = 0;
+  uint64_t write_io = 0;
+
   compaction_stats_.SetMicros(db_options_.clock->NowMicros() - start_micros);
 
   for (auto& state : compact_->sub_compact_states) {
+    write_io += (state.compaction_job_stats.file_write_nanos 
+      + state.compaction_job_stats.file_fsync_nanos 
+      + state.compaction_job_stats.file_range_sync_nanos
+      + state.compaction_job_stats.file_prepare_write_nanos);
+    read_io += (state.compaction_job_stats.file_read_nanos);
     compaction_stats_.AddCpuMicros(state.compaction_job_stats.cpu_micros);
     state.RemoveLastEmptyOutput();
+  }
+
+  if(compact_->compaction->is_manual_compaction()){
+    if(read_io > 5388747000ul){
+      std::cout << read_io << "\n";
+    }
+    RecordTick(stats_, COMPACTION_IO_READ, read_io);
+    RecordTick(stats_, COMPACTION_IO_WRITE, write_io);
+    RecordTick(stats_, COMPACTION_TIME, compaction_stats_.stats.micros);
+    RecordTick(stats_, COMPACTION_CPU_TIME, compaction_stats_.stats.cpu_micros);
   }
 
   RecordTimeToHistogram(stats_, COMPACTION_TIME,
@@ -1189,6 +1208,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   // I/O measurement variables
   PerfLevel prev_perf_level = PerfLevel::kEnableTime;
   const uint64_t kRecordStatsEvery = 1000;
+  uint64_t prev_read_nanos = 0;
   uint64_t prev_write_nanos = 0;
   uint64_t prev_fsync_nanos = 0;
   uint64_t prev_range_sync_nanos = 0;
@@ -1198,6 +1218,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   if (measure_io_stats_) {
     prev_perf_level = GetPerfLevel();
     SetPerfLevel(PerfLevel::kEnableTimeAndCPUTimeExceptForMutex);
+    prev_read_nanos = IOSTATS(read_nanos);
     prev_write_nanos = IOSTATS(write_nanos);
     prev_fsync_nanos = IOSTATS(fsync_nanos);
     prev_range_sync_nanos = IOSTATS(range_sync_nanos);
@@ -1389,6 +1410,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       db_options_.clock->CPUMicros() - prev_cpu_micros;
 
   if (measure_io_stats_) {
+    sub_compact->compaction_job_stats.file_read_nanos += IOSTATS(read_nanos) - prev_read_nanos;
     sub_compact->compaction_job_stats.file_write_nanos +=
         IOSTATS(write_nanos) - prev_write_nanos;
     sub_compact->compaction_job_stats.file_fsync_nanos +=

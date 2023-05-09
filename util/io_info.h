@@ -45,7 +45,7 @@ int GetIOStat(IO_OCCUPY *iost, const char *name)
     {
       fgets(buff, sizeof(buff), fd);  
       // std::cout << buff << "\n";
-      if(strcmp(std::string(buff+13, 8).c_str(), name)==0){
+      if(strcmp(std::string(buff+13, strlen(name)).c_str(), name)==0){
         sscanf(buff, "%llu %llu %s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu", 
         &io_occupy->major, &io_occupy->minor, 
         io_occupy->name, &io_occupy->rd_ios, 

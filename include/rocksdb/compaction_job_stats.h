@@ -91,6 +91,8 @@ struct CompactionJobStats {
   // Time spent on preparing file write (fallocate, etc)
   uint64_t file_prepare_write_nanos;
 
+  uint64_t file_read_nanos;
+
   // 0-terminated strings storing the first 8 bytes of the smallest and
   // largest key in the output.
   static const size_t kMaxPrefixLength = 8;
