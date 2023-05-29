@@ -35,6 +35,7 @@ extern const std::string kPropertiesBlockName;
 extern const std::string kPropertiesBlockOldName;
 extern const std::string kCompressionDictBlockName;
 extern const std::string kRangeDelBlockName;
+extern const std::string kKeyRangeBlockName;
 
 class MetaIndexBuilder {
  public:

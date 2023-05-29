@@ -197,6 +197,7 @@ class BlockBasedTable : public TableReader {
 
   bool TEST_FilterBlockInCache() const;
   bool TEST_IndexBlockInCache() const;
+  void DisplayKeyRange() const;
 
   // IndexReader is the interface that provides the functionality for index
   // access.
@@ -482,6 +483,9 @@ class BlockBasedTable : public TableReader {
                            InternalIterator* meta_iter,
                            const InternalKeyComparator& internal_comparator,
                            BlockCacheLookupContext* lookup_context);
+  Status ReadKeyRangeBlock(const ReadOptions& ro,
+                             FilePrefetchBuffer* prefetch_buffer,
+                             InternalIterator* meta_iter);     
   Status PrefetchIndexAndFilterBlocks(
       const ReadOptions& ro, FilePrefetchBuffer* prefetch_buffer,
       InternalIterator* meta_iter, BlockBasedTable* new_table,
@@ -598,6 +602,14 @@ struct BlockBasedTable::Rep {
   std::shared_ptr<const SliceTransform> table_prefix_extractor;
 
   std::shared_ptr<FragmentedRangeTombstoneList> fragmented_range_dels;
+
+  std::string last_key;
+  uint64_t last_key_block_offset = 0;
+  int64_t last_key_offset_in_block = 0; // 这是最后一个key的偏移
+
+  std::string first_key;
+  uint64_t first_key_start_block_offset = 0;
+  uint64_t first_key_start_offset_in_block = 0;
 
   // If global_seqno is used, all Keys in this file will have the same
   // seqno with value `global_seqno`.

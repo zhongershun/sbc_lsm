@@ -20,6 +20,8 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <sstream>
+#include <iostream>
 
 #include "cache/cache_entry_roles.h"
 #include "cache/cache_helpers.h"
@@ -62,6 +64,8 @@ extern const std::string kHashIndexPrefixesMetadataBlock;
 
 // Without anonymous namespace here, we fail the warning -Wmissing-prototypes
 namespace {
+
+// #define DISP_BLOCK_KEY
 
 constexpr size_t kBlockTrailerSize = BlockBasedTable::kBlockTrailerSize;
 
@@ -269,12 +273,20 @@ struct BlockBasedTableBuilder::Rep {
   // compressing any data blocks.
   std::vector<std::string> data_block_buffers;
   BlockBuilder range_del_block;
+  BlockBuilder key_range_block;
 
   InternalKeySliceTransform internal_prefix_transform;
   std::unique_ptr<IndexBuilder> index_builder;
   PartitionedIndexBuilder* p_index_builder_ = nullptr;
 
   std::string last_key;
+  uint64_t last_key_block_offset;
+  int64_t last_key_offset_in_block; // 这是最后一个key的偏移
+
+  std::string first_key;
+  uint64_t first_key_start_block_offset = 0;
+  uint64_t first_key_start_offset_in_block = 0;
+
   const Slice* first_key_in_next_block = nullptr;
   CompressionType compression_type;
   uint64_t sample_for_compression;
@@ -422,6 +434,7 @@ struct BlockBasedTableBuilder::Rep {
                        : table_options.data_block_index_type,
                    table_options.data_block_hash_table_util_ratio),
         range_del_block(1 /* block_restart_interval */),
+        key_range_block(1),
         internal_prefix_transform(tbo.moptions.prefix_extractor.get()),
         compression_type(tbo.compression_type),
         sample_for_compression(tbo.moptions.sample_for_compression),
@@ -982,6 +995,18 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
         }
       }
     }
+    if(r->first_key.size() == 0) {
+      r->first_key = key.ToString();
+      r->first_key_start_block_offset = r->get_offset();
+      r->first_key_start_offset_in_block = r->data_block.GetOffset();
+    }
+
+#ifdef DISP_BLOCK_KEY
+    std::cout << key.ToString() << " " << r->get_offset() << " " << r->data_block.GetOffset() << "\n";
+#endif
+
+    r->last_key_block_offset = r->get_offset();
+    r->last_key_offset_in_block = r->data_block.GetOffset();
 
     r->data_block.AddWithLastKey(key, value, r->last_key);
     r->last_key.assign(key.data(), key.size());
@@ -1788,6 +1813,28 @@ void BlockBasedTableBuilder::WriteRangeDelBlock(
   }
 }
 
+void BlockBasedTableBuilder::WriteKeyRangeBlock(
+    MetaIndexBuilder* meta_index_builder) {
+  if (ok()) {
+    BlockHandle key_range_block_handle;
+    std::string first_key;
+    std::string last_key;
+    std::stringstream ss_first;
+    std::stringstream ss_end;
+
+    ss_first << rep_->first_key << " " << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block;
+    rep_->key_range_block.Add("KeyStart", ss_first.str());
+
+    ss_end << rep_->last_key << " " << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block;
+    rep_->key_range_block.Add("KeyEnd", ss_end.str());
+
+    WriteMaybeCompressedBlock(rep_->key_range_block.Finish(), kNoCompression,
+                              &key_range_block_handle,
+                              BlockType::kKeyRangeBlock);
+    meta_index_builder->Add(kKeyRangeBlockName, key_range_block_handle);
+  }
+}
+
 void BlockBasedTableBuilder::WriteFooter(BlockHandle& metaindex_block_handle,
                                          BlockHandle& index_block_handle) {
   Rep* r = rep_;
@@ -1987,14 +2034,21 @@ Status BlockBasedTableBuilder::Finish() {
     }
   }
 
+#ifdef DISP_BLOCK_KEY
+  std::cout << "First key: " << rep_->first_key << " " 
+    << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block << "\n";
+  std::cout << "Last key: " << rep_->last_key << " "
+    << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block << "\n";
+#endif
   // Write meta blocks, metaindex block and footer in the following order.
   //    1. [meta block: filter]
   //    2. [meta block: index]
   //    3. [meta block: compression dictionary]
   //    4. [meta block: range deletion tombstone]
   //    5. [meta block: properties]
-  //    6. [metaindex block]
-  //    7. Footer
+  //    6. [meta block: key_start, key_end]
+  //    7. [metaindex block]
+  //    8. Footer
   BlockHandle metaindex_block_handle, index_block_handle;
   MetaIndexBuilder meta_index_builder;
   WriteFilterBlock(&meta_index_builder);
@@ -2002,6 +2056,7 @@ Status BlockBasedTableBuilder::Finish() {
   WriteCompressionDictBlock(&meta_index_builder);
   WriteRangeDelBlock(&meta_index_builder);
   WritePropertiesBlock(&meta_index_builder);
+  WriteKeyRangeBlock(&meta_index_builder);
   if (ok()) {
     // flush the meta index block
     WriteMaybeCompressedBlock(meta_index_builder.Finish(), kNoCompression,

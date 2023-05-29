@@ -1620,3 +1620,12 @@ option(WITH_BENCHMARK "build benchmark tests" OFF)
 if(WITH_BENCHMARK)
   add_subdirectory(${PROJECT_SOURCE_DIR}/microbench/)
 endif()
+
+add_executable(block_based_table_reader_meta_test table/block_based_table_reader_meta_test.cc)
+target_compile_definitions(block_based_table_reader_meta_test PRIVATE DISP_BLOCK_KEY)
+target_link_libraries(block_based_table_reader_meta_test ${ROCKSDB_LIB} -lpthread gtest testharness)
+
+
+# set_target_properties(block_based_table_reader_meta_test PROPERTIES COMPILE_DEFINITIONS DISP_BLOCK_KEY)
+
+# add_definitions(-DDISP_BLOCK_KEY)

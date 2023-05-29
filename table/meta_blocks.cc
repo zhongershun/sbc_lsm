@@ -31,6 +31,7 @@ const std::string kPropertiesBlockName = "rocksdb.properties";
 const std::string kPropertiesBlockOldName = "rocksdb.stats";
 const std::string kCompressionDictBlockName = "rocksdb.compression_dict";
 const std::string kRangeDelBlockName = "rocksdb.range_del";
+const std::string kKeyRangeBlockName = "rocksdb.key_range";
 
 MetaIndexBuilder::MetaIndexBuilder()
     : meta_index_block_(new BlockBuilder(1 /* restart interval */)) {}

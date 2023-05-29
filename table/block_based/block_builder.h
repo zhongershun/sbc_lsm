@@ -43,6 +43,10 @@ class BlockBuilder {
   // and delta encoding might be used.
   void Add(const Slice& key, const Slice& value,
            const Slice* const delta_value = nullptr);
+  
+  uint64_t GetOffset() const {
+    return buffer_.size();
+  }
 
   // A faster version of Add() if the previous key is already known for all
   // Add()s.

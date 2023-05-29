@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "cache/cache_entry_roles.h"
 #include "cache/cache_key.h"
@@ -95,6 +96,7 @@ CacheAllocationPtr CopyBufferToHeap(MemoryAllocator* allocator, Slice& buf) {
 #undef WITHOUT_COROUTINES
 #define WITH_COROUTINES
 #include "table/block_based/block_based_table_reader_sync_and_async.h"
+#include "block_based_table_reader.h"
 #undef WITH_COROUTINES
 // clang-format on
 
@@ -774,6 +776,7 @@ Status BlockBasedTable::Open(
   s = new_table->ReadRangeDelBlock(ro, prefetch_buffer.get(),
                                    metaindex_iter.get(), internal_comparator,
                                    &lookup_context);
+  s = new_table->ReadKeyRangeBlock(ro, prefetch_buffer.get(), metaindex_iter.get());
   if (!s.ok()) {
     return s;
   }
@@ -987,6 +990,63 @@ Status BlockBasedTable::ReadRangeDelBlock(
   return s;
 }
 
+Status BlockBasedTable::ReadKeyRangeBlock(const ReadOptions& ro,
+                                          FilePrefetchBuffer* prefetch_buffer,
+                                          InternalIterator* meta_iter) {
+  Status s;
+  BlockHandle key_range_handle;
+  s = FindOptionalMetaBlock(meta_iter, kKeyRangeBlockName, &key_range_handle);
+  if (!s.ok()) {
+    ROCKS_LOG_WARN(
+        rep_->ioptions.logger,
+        "Error when seeking to rkey range block from file: %s",
+        s.ToString().c_str());
+  } else if (!key_range_handle.IsNull()) {
+    s = meta_iter->status();
+    if (s.ok()) {
+      ReadOptions modified_ro = ro;
+      modified_ro.verify_checksums = false;
+      BlockContents block_contents;
+      BlockFetcher block_fetcher(rep_->file.get(), prefetch_buffer, rep_->footer, modified_ro, key_range_handle,
+                                &block_contents, rep_->ioptions, false /* decompress */,
+                                false /*maybe_compressed*/, BlockType::kProperties,
+                                UncompressionDict::GetEmptyDict(),
+                                PersistentCacheOptions::kEmpty, nullptr);
+      s = block_fetcher.ReadBlockContents();
+      if (!s.ok()) {
+        return s;
+      }
+      Block key_range_block(std::move(block_contents));
+      std::unique_ptr<MetaBlockIter> iter(key_range_block.NewMetaIterator());
+      for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+        s = iter->status();
+        if (!s.ok()) {
+          break;
+        }
+
+        auto key = iter->key().ToString();
+        auto value = iter->value().ToString();
+        std::stringstream ss(value);
+        if (key == "KeyStart") {
+          ss >> rep_->first_key 
+             >> rep_->first_key_start_block_offset
+             >> rep_->first_key_start_offset_in_block;
+        }
+
+        if (key == "KeyEnd") {
+          ss >> rep_->last_key
+             >> rep_->last_key_block_offset
+             >> rep_->last_key_offset_in_block;
+        }
+      }
+      if(rep_->last_key_block_offset == 0 && rep_->last_key_offset_in_block == 0) {
+        return Status::Corruption("Can not get key range data!");
+      }
+    }
+  }
+                                          
+  return s;
+}
 Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
     const ReadOptions& ro, FilePrefetchBuffer* prefetch_buffer,
     InternalIterator* meta_iter, BlockBasedTable* new_table, bool prefetch_all,
@@ -1191,6 +1251,15 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
   assert(s.ok());
   return s;
 }
+
+void BlockBasedTable::DisplayKeyRange() const {
+  std::cout << "FirstKey: " << rep_->first_key << " " 
+            << rep_->first_key_start_block_offset << " "
+            << rep_->first_key_start_offset_in_block << "\n"
+            << "LastKey: " << rep_->last_key << " "
+            << rep_->last_key_block_offset << " "
+            << rep_->last_key_offset_in_block << "\n";
+};
 
 void BlockBasedTable::SetupForCompaction() {
   switch (rep_->ioptions.access_hint_on_compaction_start) {
