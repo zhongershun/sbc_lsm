@@ -79,6 +79,10 @@ class BlockBuilder {
   // Return true iff no entries have been added since the last Reset()
   bool empty() const { return buffer_.empty(); }
 
+  void AppendSlice(Slice data) {
+    buffer_.append(data.data(), data.size());
+  }
+
  private:
   inline void AddWithLastKeyImpl(const Slice& key, const Slice& value,
                                  const Slice& last_key,

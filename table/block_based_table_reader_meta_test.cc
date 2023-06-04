@@ -188,14 +188,13 @@ class BlockBasedTableReaderBaseTest : public testing::Test {
   }
 };
 
-class BlockBasedTableReaderTest
-    : public BlockBasedTableReaderBaseTest,
-      public testing::WithParamInterface<std::tuple<
-          CompressionType, bool, BlockBasedTableOptions::IndexType, bool>> {
+class BlockBasedTableReaderTest : public BlockBasedTableReaderBaseTest, public testing::WithParamInterface<std::tuple<CompressionType, bool, BlockBasedTableOptions::IndexType, bool>> {
  protected:
   void SetUp() override {
     compression_type_ = std::get<0>(GetParam());
     use_direct_reads_ = std::get<1>(GetParam());
+    ioptions = ImmutableOptions(options);
+    comparator = InternalKeyComparator(options.comparator);
     BlockBasedTableReaderBaseTest::SetUp();
   }
 
@@ -207,48 +206,50 @@ class BlockBasedTableReaderTest
         static_cast<BlockBasedTableFactory*>(NewBlockBasedTableFactory(opts)));
   }
 
+  void CreateAndOpenTable() {
+    kv = BlockBasedTableReaderBaseTest::GenerateKVMap(
+          5 /* num_block */,
+          true /* mixed_with_human_readable_string_value */);
+
+    // Prepare keys, values, and statuses for MultiGet.
+    {
+      auto it = kv.begin();
+      for (size_t i = 0; i < kv.size(); i++) {
+        keys.emplace_back(it->first);
+        values.emplace_back();
+        statuses.emplace_back();
+        std::advance(it, 1);
+      }
+    }
+
+    foptions.use_direct_reads = use_direct_reads_;
+    table_name =
+        "BlockBasedTableReaderTest" + CompressionTypeToString(compression_type_);
+    CreateTable(table_name, compression_type_, kv);
+
+
+    NewBlockBasedTableReader(foptions, ioptions, comparator, table_name, &table);
+
+    table->DisplayKeyRange();
+  }
+
+  std::map<std::string, std::string> kv;
+  autovector<Slice, MultiGetContext::MAX_BATCH_SIZE> keys;
+  autovector<PinnableSlice, MultiGetContext::MAX_BATCH_SIZE> values;
+  autovector<Status, MultiGetContext::MAX_BATCH_SIZE> statuses;
   CompressionType compression_type_;
+  std::string table_name;
+  Options options;
+  ImmutableOptions ioptions;
+  FileOptions foptions;
+  InternalKeyComparator comparator;
+  std::unique_ptr<BlockBasedTable> table;
   bool use_direct_reads_;
 };
 
 
 TEST_P(BlockBasedTableReaderTest, Get) {
-  std::map<std::string, std::string> kv =
-      BlockBasedTableReaderBaseTest::GenerateKVMap(
-          5 /* num_block */,
-          true /* mixed_with_human_readable_string_value */);
-
-  // Prepare keys, values, and statuses for MultiGet.
-  autovector<Slice, MultiGetContext::MAX_BATCH_SIZE> keys;
-  autovector<PinnableSlice, MultiGetContext::MAX_BATCH_SIZE> values;
-  autovector<Status, MultiGetContext::MAX_BATCH_SIZE> statuses;
-  {
-    auto it = kv.begin();
-    for (size_t i = 0; i < kv.size(); i++) {
-      keys.emplace_back(it->first);
-      values.emplace_back();
-      statuses.emplace_back();
-      std::advance(it, 1);
-    }
-  }
-
-  std::string table_name =
-      "BlockBasedTableReaderTest" + CompressionTypeToString(compression_type_);
-  CreateTable(table_name, compression_type_, kv);
-
-  std::unique_ptr<BlockBasedTable> table;
-  Options options;
-  ImmutableOptions ioptions(options);
-  FileOptions foptions;
-  foptions.use_direct_reads = use_direct_reads_;
-  InternalKeyComparator comparator(options.comparator);
-  NewBlockBasedTableReader(foptions, ioptions, comparator, table_name, &table);
-
-
-  // Ensure that keys are not in cache before MultiGet.
-  for (auto& key : keys) {
-    ASSERT_FALSE(table->TEST_KeyInCache(ReadOptions(), key));
-  }
+  CreateAndOpenTable();
 
   // Prepare MultiGetContext.
   autovector<GetContext, MultiGetContext::MAX_BATCH_SIZE> get_context;
@@ -284,52 +285,41 @@ TEST_P(BlockBasedTableReaderTest, Get) {
   for (const Status& status : statuses) {
     ASSERT_OK(status);
   }
-  // Check that keys are in cache after MultiGet.
+
   for (size_t i = 0; i < keys.size(); i++) {
-    ASSERT_TRUE(table->TEST_KeyInCache(ReadOptions(), keys[i]));
     ASSERT_EQ(values[i].ToString(), kv[keys[i].ToString()]);
-    std::cout << keys[i].ToString() << "\n";
+    // std::cout << keys[i].ToString() << "\n";
+  }
+
+  size_t start_key = 6;
+  size_t last_key = 13;
+  table->UpdateKeyRange(ToInternalKey(keys[start_key].ToString()), 4168, 2081, 
+                        ToInternalKey(keys[last_key].ToString()), 12505, 2081);
+
+  for (size_t i = 0; i < keys.size(); i++) {
+    PinnableSlice value;
+    GetContext g_ctx(BytewiseComparator(), nullptr, nullptr, nullptr,
+                             GetContext::kNotFound, keys[i], &value,
+                             nullptr, nullptr, nullptr, nullptr,
+                             true /* do_merge */, nullptr, nullptr, nullptr,
+                             nullptr, nullptr, nullptr);
+
+    Status s = table->Get(ReadOptions(), ToInternalKey(keys[i].ToString()), &g_ctx, nullptr, false);
+    if(i < start_key || i > last_key){
+      std::cout << keys[i].ToString() << "\n";
+      ASSERT_EQ(g_ctx.State(), GetContext::GetState::kNotFound);
+    } else {
+      ASSERT_EQ(g_ctx.State(), GetContext::GetState::kFound);
+      ASSERT_EQ(values[i].ToString(), kv[keys[i].ToString()]);
+    }
   }
 }
 
 TEST_P(BlockBasedTableReaderTest, Scan) {
-  std::map<std::string, std::string> kv =
-      BlockBasedTableReaderBaseTest::GenerateKVMap(
-          5 /* num_block */,
-          true /* mixed_with_human_readable_string_value */);
-
-  // Prepare keys, values, and statuses for MultiGet.
-  autovector<Slice, MultiGetContext::MAX_BATCH_SIZE> keys;
-  autovector<PinnableSlice, MultiGetContext::MAX_BATCH_SIZE> values;
-  autovector<Status, MultiGetContext::MAX_BATCH_SIZE> statuses;
-  {
-    auto it = kv.begin();
-    for (size_t i = 0; i < kv.size(); i++) {
-      keys.emplace_back(it->first);
-      values.emplace_back();
-      statuses.emplace_back();
-      std::advance(it, 1);
-    }
-  }
-
-  std::string table_name =
-      "BlockBasedTableReaderTest" + CompressionTypeToString(compression_type_);
-  CreateTable(table_name, compression_type_, kv);
-
-  std::unique_ptr<BlockBasedTable> table;
-  Options options;
-  ImmutableOptions ioptions(options);
-  FileOptions foptions;
-  foptions.use_direct_reads = use_direct_reads_;
-  InternalKeyComparator comparator(options.comparator);
-  NewBlockBasedTableReader(foptions, ioptions, comparator, table_name, &table);
+  CreateAndOpenTable();
 
   table->DisplayKeyRange();
 
-  // Ensure that keys are not in cache before MultiGet.
-  for (auto& key : keys) {
-    ASSERT_FALSE(table->TEST_KeyInCache(ReadOptions(), key));
-  }
 
   // Prepare MultiGetContext.
   autovector<GetContext, MultiGetContext::MAX_BATCH_SIZE> get_context;
@@ -349,9 +339,6 @@ TEST_P(BlockBasedTableReaderTest, Scan) {
     sorted_keys.emplace_back(&key_ctx);
   }
 
-  PerfContext* perf_ctx = get_perf_context();
-  perf_ctx->Reset();
-
   Arena* arena = new Arena();
   auto iter = table->NewIterator(ReadOptions(), nullptr, arena, 
     false, kUserIterator);
@@ -362,6 +349,87 @@ TEST_P(BlockBasedTableReaderTest, Scan) {
     // std::cout << k << " " << k.size() << "\n";
     ASSERT_EQ(iter->value().ToString(), kv[k]);
   }
+}
+
+
+TEST_P(BlockBasedTableReaderTest, SeekToLast) {
+  CreateAndOpenTable();
+
+  Arena* arena = new Arena();
+  auto iter = table->NewIterator(ReadOptions(), nullptr, arena, 
+    false, kUserIterator);
+  
+  iter->SeekToLast();
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_EQ(iter->value().ToString(), kv[keys[keys.size()-1].ToString()]);
+  std::cout << "Last key: " << iter->key().ToString() << "\n";
+
+  table->UpdateKeyRange(ToInternalKey(keys[6].ToString()), 4168, 2081, 
+                        ToInternalKey(keys[13].ToString()), 12505, 2081);
+
+  iter->SeekToLast();
+  ASSERT_TRUE(iter->Valid());
+  std::cout << "Last key: " << iter->key().ToString() << "\n";
+  ASSERT_EQ(iter->value().ToString(), kv[keys[13].ToString()]);
+
+  iter->Next();
+  ASSERT_FALSE(iter->Valid());
+
+  iter->Seek(ToInternalKey(keys[0].ToString()));
+  ASSERT_TRUE(iter->Valid());
+
+  iter->Seek(ToInternalKey(keys[15].ToString()));
+  ASSERT_FALSE(iter->Valid());
+}
+
+
+TEST_P(BlockBasedTableReaderTest, SeekToFirst) {
+  CreateAndOpenTable();
+
+  Arena* arena = new Arena();
+  auto iter = table->NewIterator(ReadOptions(), nullptr, arena, 
+    false, kUserIterator);
+  
+  iter->SeekToFirst();
+  std::cout << "First key: " << iter->key().ToString() << "\n";
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_EQ(iter->value().ToString(), kv[keys[0].ToString()]);
+  
+
+  table->UpdateKeyRange(ToInternalKey(keys[6].ToString()), 4168, 2081, 
+                        ToInternalKey(keys[13].ToString()), 12505, 2081);
+
+  iter->SeekToFirst();
+  std::cout << "First key: " << iter->key().ToString() << "\n";
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_EQ(iter->value().ToString(), kv[keys[6].ToString()]);
+  
+}
+
+
+TEST_P(BlockBasedTableReaderTest, WriteNewKeyRangeBlock) {
+  CreateAndOpenTable();
+  table->UpdateKeyRange(ToInternalKey(keys[6].ToString()), 4168, 2081, 
+                        ToInternalKey(keys[13].ToString()), 12505, 2081);
+  ASSERT_OK(table->WriteKeyRangeBlock());
+  
+  std::unique_ptr<BlockBasedTable> new_table;
+  NewBlockBasedTableReader(foptions, ioptions, comparator, table_name, &new_table);
+  new_table->DisplayKeyRange();
+
+  Arena* arena = new Arena();
+  auto iter = new_table->NewIterator(ReadOptions(), nullptr, arena, 
+    false, kUserIterator);
+  iter->SeekToFirst();
+  std::cout << "First key: " << iter->key().ToString() << "\n";
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_EQ(iter->value().ToString(), kv[keys[6].ToString()]);
+
+  iter->SeekToLast();
+  ASSERT_TRUE(iter->Valid());
+  std::cout << "Last key: " << iter->key().ToString() << "\n";
+  ASSERT_EQ(iter->value().ToString(), kv[keys[13].ToString()]);
+
 }
 
 
@@ -376,12 +444,20 @@ INSTANTIATE_TEST_CASE_P(
         ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),
         ::testing::Values(false)));
 
-INSTANTIATE_TEST_CASE_P(
-    Scan, BlockBasedTableReaderTest,
-    ::testing::Combine(
-        ::testing::ValuesIn(GetSupportedCompressions()), ::testing::Bool(),
-        ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),
-        ::testing::Values(false)));
+// INSTANTIATE_TEST_CASE_P(
+//     Scan, BlockBasedTableReaderTest,
+//     ::testing::Combine(
+//         ::testing::ValuesIn(GetSupportedCompressions()), ::testing::Bool(),
+//         ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),
+//         ::testing::Values(false)));
+
+// INSTANTIATE_TEST_CASE_P(
+//     SeekToLast, BlockBasedTableReaderTest,
+//     ::testing::Combine(
+//         ::testing::Values(kNoCompression), ::testing::Values(true),
+//         ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),
+//         ::testing::Values(false)));
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

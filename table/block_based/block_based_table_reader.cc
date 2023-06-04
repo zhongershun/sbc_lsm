@@ -996,6 +996,8 @@ Status BlockBasedTable::ReadKeyRangeBlock(const ReadOptions& ro,
   Status s;
   BlockHandle key_range_handle;
   s = FindOptionalMetaBlock(meta_iter, kKeyRangeBlockName, &key_range_handle);
+  rep_->key_range_block_offset = key_range_handle.offset();
+  // std::cout << "key_range_handle.offset(): " << rep_->key_range_block_offset << "\n";
   if (!s.ok()) {
     ROCKS_LOG_WARN(
         rep_->ioptions.logger,
@@ -2235,6 +2237,10 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
   if (!may_match) {
     RecordTick(rep_->ioptions.stats, BLOOM_FILTER_USEFUL);
     PERF_COUNTER_BY_LEVEL_ADD(bloom_filter_useful, 1, rep_->level);
+  } else if(rep_->internal_comparator.Compare((key),
+     rep_->first_key) < 0 || rep_->internal_comparator.Compare((key),
+     rep_->last_key) > 0) {
+    // Do nothing
   } else {
     IndexBlockIter iiter_on_stack;
     // if prefix_extractor found in block differs from options, disable
@@ -2464,6 +2470,76 @@ Status BlockBasedTable::Prefetch(const Slice* const begin,
   }
 
   return Status::OK();
+}
+
+void BlockBasedTable::UpdateKeyRange(std::string first_k,
+                                     uint64_t first_block_off,
+                                     uint64_t first_k_off_in_block,
+                                     std::string last_k,
+                                     uint64_t last_block_off, uint64_t
+                                     last_k_off_in_block) {
+  rep_->first_key = first_k;
+  rep_->first_key_start_block_offset = first_block_off;
+  rep_->first_key_start_offset_in_block = first_k_off_in_block;
+  rep_->last_key = last_k;
+  rep_->last_key_block_offset = last_block_off;
+  rep_->last_key_offset_in_block = last_k_off_in_block;
+}
+
+Status BlockBasedTable::WriteKeyRangeBlock() {
+  BlockBuilder key_range_block(1);
+  std::string first_key;
+  std::string last_key;
+  std::stringstream ss_first;
+  std::stringstream ss_end;
+  Status s;
+
+  size_t block_size = 500;
+  size_t key_size_sum = 21;
+  size_t unk_size = 26;
+
+  ss_first << rep_->first_key << " " << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block;
+  key_range_block.Add("KeyStart", ss_first.str());
+
+  ss_end << rep_->last_key << " " << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block;
+  key_range_block.Add("KeyEnd", ss_end.str());
+
+  std::string pedding(block_size - key_size_sum - unk_size - ss_first.str().size() - ss_end.str().size(),'t');
+  key_range_block.Add("Pedding", pedding);
+
+  auto block_contents = key_range_block.Finish();
+
+  // 添加CheckSum
+  std::array<char, kBlockTrailerSize> trailer;
+  uint32_t checksum = ComputeBuiltinChecksumWithLastByte(
+      rep_->table_options.checksum, block_contents.data(), block_contents.size(),
+      /*last_byte*/ kNoCompression);
+  EncodeFixed32(trailer.data() + 1, checksum);
+  key_range_block.AppendSlice(Slice(trailer.data(), trailer.size()));
+
+  block_contents = Slice(block_contents.data(), block_contents.size() + kBlockTrailerSize);
+
+  assert(block_contents.size() == block_size + kBlockTrailerSize);
+
+  // TODO: 把这个block写进文件
+  auto file_name = rep_->file->file_name();
+  std::fstream file(file_name, std::ios::in | std::ios::out | std::ios::binary);
+  if (!file) {
+      return Status::IOError("Failed to open the SSTable: " + file_name);
+  }
+  file.seekp(rep_->key_range_block_offset, std::ios::beg);
+  if (!file.good()) {
+      file.close();
+      return Status::IOError("Failed to seek to the specified position. File size: " + rep_->file_size);
+  }
+  file.write(block_contents.data(), block_contents.size());
+  if (!file.good()) {
+      s = Status::IOError("Failed to write data.");
+  } else {
+      s = Status::OK();
+  }
+  file.close();
+  return s;
 }
 
 Status BlockBasedTable::VerifyChecksum(const ReadOptions& read_options,

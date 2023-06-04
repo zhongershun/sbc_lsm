@@ -154,6 +154,11 @@ class BlockBasedTable : public TableReader {
   // IO or iteration error.
   Status Prefetch(const Slice* begin, const Slice* end) override;
 
+  void UpdateKeyRange(std::string first_k, uint64_t first_block_off, uint64_t first_k_off_in_block,
+                      std::string last_k, uint64_t last_block_off, uint64_t last_k_off_in_block);
+
+  Status WriteKeyRangeBlock();
+
   // Given a key, return an approximate byte offset in the file where
   // the data for that key begins (or would begin if the key were
   // present in the file). The returned value is in terms of file
@@ -610,6 +615,8 @@ struct BlockBasedTable::Rep {
   std::string first_key;
   uint64_t first_key_start_block_offset = 0;
   uint64_t first_key_start_offset_in_block = 0;
+
+  uint64_t key_range_block_offset = 0;
 
   // If global_seqno is used, all Keys in this file will have the same
   // seqno with value `global_seqno`.

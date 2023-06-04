@@ -383,7 +383,7 @@ bool DataBlockIter::SeekForGetImpl(const Slice& target) {
     }
   }
 
-  if (current_ == restarts_) {
+  if (current_ == end_) {
     // Search reaches to the end of the block. There are three possibilites:
     // 1) there is only one user_key match in the block (otherwise collsion).
     //    the matching user_key resides in the last restart interval, and it

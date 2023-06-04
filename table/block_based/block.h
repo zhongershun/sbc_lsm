@@ -282,7 +282,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
     Cleanable::Reset();
   }
 
-  bool Valid() const override { return current_ < restarts_; }
+  // 这里应该小于last_key的Offset
+  bool Valid() const override { return current_ < end_; }
 
   virtual void SeekToFirst() override final {
     SeekToFirstImpl();
@@ -326,6 +327,10 @@ class BlockIter : public InternalIteratorBase<TValue> {
     return key_;
   }
 
+  void UpdateEndOffset(uint32_t end_off) {
+    end_ = end_off;
+  }
+
 #ifndef NDEBUG
   ~BlockIter() override {
     // Assert that the BlockIter is never deleted while Pinning is Enabled.
@@ -365,6 +370,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
   uint32_t restarts_;  // Offset of restart array (list of fixed32)
   // current_ is offset in data_ of current entry.  >= restarts_ if !Valid
   uint32_t current_;
+  // end of the last key
+  uint32_t end_;
   // Raw key from block.
   IterKey raw_key_;
   // Buffer for key data when global seqno assignment is enabled.
@@ -400,6 +407,7 @@ class BlockIter : public InternalIteratorBase<TValue> {
     icmp_ = std::make_unique<InternalKeyComparator>(raw_ucmp);
     data_ = data;
     restarts_ = restarts;
+    end_ = restarts_;
     num_restarts_ = num_restarts;
     current_ = restarts_;
     restart_index_ = num_restarts_;
@@ -514,7 +522,7 @@ class DataBlockIter final : public BlockIter<Slice> {
 
   Slice value() const override {
     assert(Valid());
-    if (read_amp_bitmap_ && current_ < restarts_ &&
+    if (read_amp_bitmap_ && current_ < end_ &&
         current_ != last_bitmap_offset_) {
       read_amp_bitmap_->Mark(current_ /* current entry offset */,
                              NextEntryOffset() - 1);

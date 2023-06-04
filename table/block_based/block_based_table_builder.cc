@@ -65,7 +65,7 @@ extern const std::string kHashIndexPrefixesMetadataBlock;
 // Without anonymous namespace here, we fail the warning -Wmissing-prototypes
 namespace {
 
-// #define DISP_BLOCK_KEY
+#define DISP_BLOCK_KEY
 
 constexpr size_t kBlockTrailerSize = BlockBasedTable::kBlockTrailerSize;
 
@@ -1005,10 +1005,10 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
     std::cout << key.ToString() << " " << r->get_offset() << " " << r->data_block.GetOffset() << "\n";
 #endif
 
+    r->data_block.AddWithLastKey(key, value, r->last_key);
     r->last_key_block_offset = r->get_offset();
     r->last_key_offset_in_block = r->data_block.GetOffset();
-
-    r->data_block.AddWithLastKey(key, value, r->last_key);
+    
     r->last_key.assign(key.data(), key.size());
     if (r->state == Rep::State::kBuffered) {
       // Buffered keys will be replayed from data_block_buffers during
@@ -1821,6 +1821,9 @@ void BlockBasedTableBuilder::WriteKeyRangeBlock(
     std::string last_key;
     std::stringstream ss_first;
     std::stringstream ss_end;
+    size_t block_size = 500;
+    size_t key_size_sum = 21;
+    size_t unk_size = 26;
 
     ss_first << rep_->first_key << " " << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block;
     rep_->key_range_block.Add("KeyStart", ss_first.str());
@@ -1828,7 +1831,13 @@ void BlockBasedTableBuilder::WriteKeyRangeBlock(
     ss_end << rep_->last_key << " " << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block;
     rep_->key_range_block.Add("KeyEnd", ss_end.str());
 
-    WriteMaybeCompressedBlock(rep_->key_range_block.Finish(), kNoCompression,
+    std::string pedding(block_size - key_size_sum - unk_size - ss_first.str().size() - ss_end.str().size(),'t');
+    rep_->key_range_block.Add("Pedding", pedding);
+
+    auto block_contents = rep_->key_range_block.Finish();
+    // std::cout << "block_contents.size(): " << block_contents.size()
+    //   << " Unk: " << block_contents.size() - 21 - ss_first.str().size() - ss_end.str().size() - pedding.size() << std::endl;
+    WriteMaybeCompressedBlock(block_contents, kNoCompression,
                               &key_range_block_handle,
                               BlockType::kKeyRangeBlock);
     meta_index_builder->Add(kKeyRangeBlockName, key_range_block_handle);

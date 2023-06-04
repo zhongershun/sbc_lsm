@@ -10,10 +10,24 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-void BlockBasedTableIterator::SeekToFirst() { SeekImpl(nullptr, false); }
+void BlockBasedTableIterator::SeekToFirst() { 
+  Slice first_key = Slice(table_->get_rep()->first_key);
+  SeekImpl(&first_key, false); 
+}
 
 void BlockBasedTableIterator::Seek(const Slice& target) {
-  SeekImpl(&target, true);
+  if(user_comparator_.Compare(ExtractUserKey(target),
+     table_->get_rep()->first_key) < 0) {
+    Slice first_key = Slice(table_->get_rep()->first_key);
+    SeekImpl(&first_key, true); 
+  } else if(user_comparator_.Compare(ExtractUserKey(target),
+     table_->get_rep()->last_key) > 0) {
+    Slice last_key = Slice(table_->get_rep()->last_key);
+    SeekImpl(&last_key, true);
+    Next();
+  } else {
+    SeekImpl(&target, true);
+  }
 }
 
 void BlockBasedTableIterator::SeekImpl(const Slice* target,
@@ -186,14 +200,17 @@ void BlockBasedTableIterator::SeekToLast() {
   is_out_of_bound_ = false;
   is_at_first_key_from_index_ = false;
   SavePrevIndexValue();
-  index_iter_->SeekToLast();
+  // index_iter_->SeekToLast();
+  Slice last_key = Slice(table_->get_rep()->last_key);
+  index_iter_->Seek(last_key);
   if (!index_iter_->Valid()) {
     ResetDataIter();
     return;
   }
   InitDataBlock();
-  block_iter_.SeekToLast();
-  FindKeyBackward();
+  // block_iter_.SeekToLast();
+  block_iter_.Seek(last_key);
+  FindKeyBackward(); // 如果最后一个block没找到就从上一个block找
   CheckDataBlockWithinUpperBound();
 }
 
@@ -264,6 +281,10 @@ void BlockBasedTableIterator::InitDataBlock() {
         /*get_context=*/nullptr, &lookup_context_,
         block_prefetcher_.prefetch_buffer(),
         /*for_compaction=*/is_for_compaction, /*async_read=*/false, s);
+    // The last data block
+    if(data_block_handle.offset() == rep->last_key_block_offset) {
+      block_iter_.UpdateEndOffset(rep->last_key_offset_in_block);
+    }
     block_iter_points_to_real_block_ = true;
     CheckDataBlockWithinUpperBound();
   }
@@ -374,7 +395,7 @@ void BlockBasedTableIterator::FindBlockForward() {
       return;
     }
     // Whether next data block is out of upper bound, if there is one.
-    const bool next_block_is_out_of_bound =
+    bool next_block_is_out_of_bound =
         read_options_.iterate_upper_bound != nullptr &&
         block_iter_points_to_real_block_ &&
         block_upper_bound_check_ == BlockUpperBound::kUpperBoundInCurBlock;
@@ -383,6 +404,9 @@ void BlockBasedTableIterator::FindBlockForward() {
                *read_options_.iterate_upper_bound, /*a_has_ts=*/false,
                index_iter_->user_key(), /*b_has_ts=*/true) <= 0);
     ResetDataIter();
+    if(index_iter_->value().handle.offset() >= table_->get_rep()->last_key_block_offset) {
+      next_block_is_out_of_bound = true;
+    }
     index_iter_->Next();
     if (next_block_is_out_of_bound) {
       // The next block is out of bound. No need to read it.
