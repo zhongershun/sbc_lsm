@@ -236,6 +236,16 @@ class CompactionIterator {
   // REQUIRED: SeekToFirst() has been called.
   void Next();
 
+  // 这里不会掉用merge_iterator的Next，而是把merge_iterator的结果输出
+  void SBCNext() {
+    NextFromInput();
+    if (Valid()) {
+      // Record that we've outputted a record for the current key.
+      has_outputted_key_ = true;
+    }
+    PrepareOutput();
+  }
+
   // Getters
   const Slice& key() const { return key_; }
   const Slice& value() const { return value_; }

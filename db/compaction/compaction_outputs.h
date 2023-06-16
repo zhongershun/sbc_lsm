@@ -184,6 +184,10 @@ class CompactionOutputs {
     return range_del_agg_ && !range_del_agg_->IsEmpty();
   }
 
+  std::unique_ptr<WritableFileWriter> GetFileWriter() {
+    return std::move(file_writer_);
+  }
+
  private:
   friend class SubcompactionState;
 

@@ -828,6 +828,16 @@ class DB {
   virtual Iterator* NewIterator(const ReadOptions& options) {
     return NewIterator(options, DefaultColumnFamily());
   }
+  virtual Iterator* NewSBCIterator(const ReadOptions& options,
+                                 ColumnFamilyHandle* column_family, 
+                                 const Slice* begin, const Slice* end) {
+    abort();
+    return nullptr;
+  }
+  virtual Iterator* NewSBCIterator(const ReadOptions& options, 
+                                 const Slice* begin, const Slice* end) {
+    return NewSBCIterator(options, DefaultColumnFamily(), begin, end);
+  }
   // Returns iterators from a consistent database state across multiple
   // column families. Iterators are heap allocated and need to be deleted
   // before the db is deleted

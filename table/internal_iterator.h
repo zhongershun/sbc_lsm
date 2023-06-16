@@ -75,6 +75,14 @@ class InternalIteratorBase : public Cleanable {
   // REQUIRES: Valid()
   virtual void Next() = 0;
 
+  virtual void SBCNext() {
+    abort();
+  }
+
+  virtual bool FromCompSST() const {
+    return false;
+  }
+
   // Moves to the next entry in the source, and return result. Iterator
   // implementation should override this method to help methods inline better,
   // or when UpperBoundCheckResult() is non-trivial.

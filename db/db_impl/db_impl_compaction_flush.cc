@@ -3593,6 +3593,11 @@ void DBImpl::RemoveManualCompaction(DBImpl::ManualCompactionState* m) {
   return;
 }
 
+// 释放key的范围
+void DBImpl::AddSBC(DBImpl::ManualCompactionState* m) {
+  SBC_compaction_dequeue_.push_back(m);
+}
+
 bool DBImpl::ShouldntRunManualCompaction(ManualCompactionState* m) {
   if (num_running_ingest_file_ > 0) {
     // We need to wait for other IngestExternalFile() calls to finish

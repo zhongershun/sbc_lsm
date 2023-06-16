@@ -12,6 +12,7 @@
 #include "db/range_del_aggregator.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/types.h"
+#include "db/compaction/compaction_job.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -77,6 +78,8 @@ class MergeIteratorBuilder {
   // stores the memtable range tombstone iterator.
   // This is used for DB iterator to refresh memtable range tombstones.
   InternalIterator* Finish(ArenaWrappedDBIter* db_iter = nullptr);
+
+  Status SetSBCJob(CompactionJob* compact_job);
 
  private:
   MergingIterator* merge_iter;

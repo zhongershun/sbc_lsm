@@ -889,6 +889,93 @@ Compaction* CompactionPicker::CompactRange(
   return compaction;
 }
 
+// TODO: 
+Compaction* CompactionPicker::SBCCompactRange(
+    const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
+    const MutableDBOptions& mutable_db_options, VersionStorageInfo* vstorage,
+    int input_level, int output_level,
+    const CompactRangeOptions& compact_range_options, const InternalKey* begin,
+    const InternalKey* end, InternalKey** compaction_end, bool* manual_conflict,
+    uint64_t max_file_num_to_ignore, const std::string& trim_ts) {
+  // CompactionPickerFIFO has its own implementation of compact range
+  assert(ioptions_.compaction_style != kCompactionStyleFIFO);
+
+  assert(input_level == ColumnFamilyData::kCompactAllLevels);
+  {
+    assert(ioptions_.compaction_style == kCompactionStyleUniversal);
+
+    // Universal compaction with more than one level always compacts all the
+    // files together to the last level.
+    assert(vstorage->num_levels() > 1);
+    // DBImpl::CompactRange() set output level to be the last level
+    if (ioptions_.allow_ingest_behind) {
+      assert(output_level == vstorage->num_levels() - 2);
+    } else {
+      assert(output_level == vstorage->num_levels() - 1);
+    }
+    // DBImpl::RunManualCompaction will make full range for universal compaction
+    assert(begin != nullptr);
+    assert(end != nullptr);
+    *compaction_end = nullptr;
+
+    int start_level = 1;
+    // NOTE: 如果一层只有一个文件，那么这次就不能执行SBC
+    for (; start_level < vstorage->num_levels() &&
+           vstorage->NumLevelFiles(start_level) < 2;
+         start_level++) {
+    }
+    if (start_level == vstorage->num_levels()) {
+      return nullptr;
+    }
+
+    if ((start_level == 0) && (!level0_compactions_in_progress_.empty())) {
+      *manual_conflict = true;
+      // Only one level 0 compaction allowed
+      return nullptr;
+    }
+
+    // NOTE: 把所有的文件都放进来
+    std::vector<CompactionInputFiles> inputs(vstorage->num_levels() -
+                                             start_level);
+    for (int level = vstorage->num_levels() - 1;level >= start_level; level--) {
+      inputs[level - start_level].level = level;
+      vstorage->GetOverlappingInputs(input_level, begin, end, &inputs[level - start_level].files);
+    }
+
+    // 2 non-exclusive manual compactions could run at the same time producing
+    // overlaping outputs in the same level.
+    if (FilesRangeOverlapWithCompaction(
+            inputs, output_level,
+            Compaction::EvaluatePenultimateLevel(vstorage, ioptions_,
+                                                 start_level, output_level))) {
+      // This compaction output could potentially conflict with the output
+      // of a currently running compaction, we cannot run it.
+      *manual_conflict = true;
+      return nullptr;
+    }
+
+    Compaction* c = new Compaction(
+        vstorage, ioptions_, mutable_cf_options, mutable_db_options,
+        std::move(inputs), output_level,
+        MaxFileSizeForLevel(mutable_cf_options, output_level,
+                            ioptions_.compaction_style),
+        /* max_compaction_bytes */ LLONG_MAX,
+        compact_range_options.target_path_id,
+        GetCompressionType(vstorage, mutable_cf_options, output_level, 1),
+        GetCompressionOptions(mutable_cf_options, vstorage, output_level),
+        Temperature::kUnknown, compact_range_options.max_subcompactions,
+        /* grandparents */ {}, /* is manual */ true, trim_ts, /* score */ -1,
+        /* deletion_compaction */ false, /* l0_files_might_overlap */ true,
+        CompactionReason::kUnknown,
+        compact_range_options.blob_garbage_collection_policy,
+        compact_range_options.blob_garbage_collection_age_cutoff);
+
+    RegisterCompaction(c);
+    vstorage->ComputeCompactionScore(ioptions_, mutable_cf_options);
+    return c;
+  }
+}
+
 #ifndef ROCKSDB_LITE
 namespace {
 // Test whether two files have overlapping key-ranges.

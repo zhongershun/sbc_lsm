@@ -184,6 +184,14 @@ class CompactionJob {
   // subcompaction results
   Status Run();
 
+  Status AddKeyValue();
+
+  Status CreateSBCIterator(InternalIterator *input);
+
+  Status SubmitFinishCompactionOutputFile(
+    const Status& input_status, SubcompactionState* sub_compact,
+    CompactionOutputs& outputs, const Slice& next_table_min_key);
+
   // REQUIRED: mutex held
   // Add compaction input/output to the current version
   Status Install(const MutableCFOptions& mutable_cf_options);
@@ -218,6 +226,11 @@ class CompactionJob {
   CompactionJobStats* compaction_job_stats_;
 
  private:
+  struct WriteFileData {
+    FileMetaData *meta_;
+    std::shared_ptr<WritableFileWriter> outfile_;
+  };
+
   friend class CompactionJobTestBase;
 
   // Generates a histogram representing potential divisions of key ranges from
@@ -310,6 +323,9 @@ class CompactionJob {
   std::shared_ptr<Cache> table_cache_;
 
   EventLogger* event_logger_;
+
+  std::unique_ptr<rocksdb::CompactionIterator> SBC_iter_;
+  std::vector<WriteFileData> files_need_flush_;
 
   bool paranoid_file_checks_;
   bool measure_io_stats_;

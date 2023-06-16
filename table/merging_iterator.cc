@@ -24,6 +24,7 @@
 #include "util/autovector.h"
 #include "util/heap.h"
 #include "util/stop_watch.h"
+// #include "db/compaction/scan_based_compaction_buffer.h"
 
 namespace ROCKSDB_NAMESPACE {
 // For merging iterator to process range tombstones, we treat the start and end
@@ -420,6 +421,8 @@ class MergingIterator : public InternalIterator {
     }
   }
 
+  void SBCNext() override;
+
   void Next() override {
     assert(Valid());
     // Ensure that all children are positioned after key().
@@ -613,6 +616,8 @@ class MergingIterator : public InternalIterator {
   // forward.  Lazily initialize it to save memory.
   std::unique_ptr<MergerMaxIterHeap> maxHeap_;
   PinnedIteratorsManager* pinned_iters_mgr_;
+
+  CompactionJob* compact_job_;
 
   // Used to bound range tombstones. For point keys, DBIter and SSTable iterator
   // take care of boundary checking.
@@ -1432,6 +1437,46 @@ InternalIterator* MergeIteratorBuilder::Finish(ArenaWrappedDBIter* db_iter) {
     merge_iter = nullptr;
   }
   return ret;
+}
+
+void MergingIterator::SBCNext() {
+  assert(Valid());
+  // Ensure that all children are positioned after key().
+  // If we are moving in the forward direction, it is already
+  // true for all of the non-current children since current_ is
+  // the smallest child and key() == current_->key().
+  if (direction_ != kForward) {
+    // The loop advanced all non-current children to be > key() so current_
+    // should still be strictly the smallest key.
+    SwitchToForward();
+  }
+  // For the heap modifications below to be correct, current_ must be the
+  // current top of the heap.
+  assert(current_ == CurrentForward());
+  // as the current points to the current record. move the iterator forward.
+  current_->Next();
+  if (current_->Valid()) {
+    // current is still valid after the Next() call above.  Call
+    // replace_top() to restore the heap property.  When the same child
+    // iterator yields a sequence of keys, this is cheap.
+    assert(current_->status().ok());
+    minHeap_.replace_top(minHeap_.top());
+  } else {
+    // current stopped being valid, remove it from the heap.
+    considerStatus(current_->status());
+    minHeap_.pop();
+  }
+  FindNextVisibleKey();
+  current_ = CurrentForward();
+
+  if(current_->FromCompSST()) {
+    compact_job_->AddKeyValue();
+  }
+}
+
+Status MergeIteratorBuilder::SetSBCJob(CompactionJob* compact_job) {
+  merge_iter->compact_job_ = compact_job;
+  return Status::OK();
 }
 
 }  // namespace ROCKSDB_NAMESPACE

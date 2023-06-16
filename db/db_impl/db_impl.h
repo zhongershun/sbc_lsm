@@ -334,6 +334,10 @@ class DBImpl : public DB {
   using DB::NewIterator;
   virtual Iterator* NewIterator(const ReadOptions& options,
                                 ColumnFamilyHandle* column_family) override;
+  using DB::NewSBCIterator;
+  virtual Iterator* NewSBCIterator(const ReadOptions& options,
+                                 ColumnFamilyHandle* column_family, 
+                                 const Slice* begin, const Slice* end) override;
   virtual Status NewIterators(
       const ReadOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
@@ -2170,6 +2174,7 @@ class DBImpl : public DB {
   bool HasPendingManualCompaction();
   bool HasExclusiveManualCompaction();
   void AddManualCompaction(ManualCompactionState* m);
+  void AddSBC(DBImpl::ManualCompactionState* m);
   void RemoveManualCompaction(ManualCompactionState* m);
   bool ShouldntRunManualCompaction(ManualCompactionState* m);
   bool HaveManualCompaction(ColumnFamilyData* cfd);
@@ -2551,6 +2556,8 @@ class DBImpl : public DB {
   int bg_purge_scheduled_;
 
   std::deque<ManualCompactionState*> manual_compaction_dequeue_;
+
+  std::deque<ManualCompactionState*> SBC_compaction_dequeue_;
 
   // shall we disable deletion of obsolete files
   // if 0 the deletion is enabled.

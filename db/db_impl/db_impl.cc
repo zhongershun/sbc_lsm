@@ -3394,6 +3394,188 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
   return db_iter;
 }
 
+// TODO: 创建SBC迭代器
+Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
+                                 ColumnFamilyHandle* column_family, 
+                                 const Slice* begin, const Slice* end) {
+  if (options.managed) {
+    return NewErrorIterator(
+        Status::NotSupported("Managed iterator is not supported anymore."));
+  }
+  Iterator* result = nullptr;
+  if (options.read_tier == kPersistedTier) {
+    return NewErrorIterator(Status::NotSupported(
+        "ReadTier::kPersistedData is not yet supported in iterators."));
+  }
+
+  assert(column_family);
+
+  if (options.timestamp) {
+    const Status s = FailIfTsMismatchCf(
+        column_family, *(options.timestamp), /*ts_for_read=*/true);
+    if (!s.ok()) {
+      return NewErrorIterator(s);
+    }
+  } else {
+    const Status s = FailIfCfHasTs(column_family);
+    if (!s.ok()) {
+      return NewErrorIterator(s);
+    }
+  }
+
+  auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+  ColumnFamilyData* cfd = cfh->cfd();
+  assert(cfd != nullptr);
+  ReadCallback* read_callback = nullptr;  // No read callback provided.
+
+  SuperVersion* sv = cfd->GetReferencedSuperVersion(this);
+  SequenceNumber snapshot = versions_->LastSequence();
+
+  ArenaWrappedDBIter* db_iter = NewArenaWrappedDbIterator(
+      env_, options, *cfd->ioptions(), sv->mutable_cf_options, sv->current,
+      snapshot, sv->mutable_cf_options.max_sequential_skip_in_iterations,
+      sv->version_number, read_callback, this, cfd, false,
+      options.snapshot != nullptr ? false : true);
+
+
+  auto* current = cfd->current();
+    current->Ref();
+  InternalIterator* internal_iter;
+  CompactionJob *compaction_job;
+  {
+    auto arena =  db_iter->GetArena();
+    auto sequence = snapshot;
+    
+    assert(arena != nullptr);
+    // Need to create internal iterator from the arena.
+    MergeIteratorBuilder merge_iter_builder(
+        &cfd->internal_comparator(), arena,
+        !options.total_order_seek &&
+            sv->mutable_cf_options.prefix_extractor != nullptr,
+        options.iterate_upper_bound);
+    // Collect iterator for mutable memtable
+    auto mem_iter = sv->mem->NewIterator(options, arena);
+    Status s;
+    if (!options.ignore_range_deletions) {
+      TruncatedRangeDelIterator* mem_tombstone_iter = nullptr;
+      auto range_del_iter = sv->mem->NewRangeTombstoneIterator(
+          options, sequence, false /* immutable_memtable */);
+      if (range_del_iter == nullptr || range_del_iter->empty()) {
+        delete range_del_iter;
+      } else {
+        mem_tombstone_iter = new TruncatedRangeDelIterator(
+            std::unique_ptr<FragmentedRangeTombstoneIterator>(range_del_iter),
+            &cfd->ioptions()->internal_comparator, nullptr /* smallest */,
+            nullptr /* largest */);
+      }
+      merge_iter_builder.AddPointAndTombstoneIterator(mem_iter,
+                                                      mem_tombstone_iter);
+    } else {
+      merge_iter_builder.AddIterator(mem_iter);
+    }
+
+    // Collect all needed child iterators for immutable memtables
+    if (s.ok()) {
+      sv->imm->AddIterators(options, &merge_iter_builder,
+                                      !options.ignore_range_deletions);
+    }
+    TEST_SYNC_POINT_CALLBACK("DBImpl::NewSBCIterator:StatusCallback", &s);
+    if (s.ok()) {
+      // Collect iterators for files in L0 - Ln
+      if (options.read_tier != kMemtableTier) {
+        // 这里面的iterator要清楚自己是否是需要合并的
+        sv->current->AddIterators(options, file_options_,
+                                            &merge_iter_builder,
+                                            true);
+      }
+      // TODO:  创建一个合并任务，放进迭代器
+      {
+        const CompactRangeOptions compact_range_options;
+        bool exclusive = true;
+        int final_output_level = cfd->NumberLevels() - 1;
+        // if bottom most level is reserved
+        if (immutable_db_options_.allow_ingest_behind) {
+          final_output_level--;
+        }
+        
+        ManualCompactionState manual(
+          cfd, ColumnFamilyData::kCompactAllLevels, final_output_level, 
+          compact_range_options.target_path_id,
+          exclusive, false, compact_range_options.canceled);
+        
+        InternalKey *begin_storage = new InternalKey();
+        InternalKey *end_storage = new InternalKey();
+        begin_storage->SetMinPossibleForUserKey(*begin);
+        manual.begin = begin_storage;
+        end_storage->SetMaxPossibleForUserKey(*end);
+        manual.end = end_storage;
+
+        // TODO: 创建compaction类 参考CompactionPicker::CompactRange
+        // 这里应该需要重写一个CompactRange
+        bool manual_conflict;
+        auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
+        Compaction* compaction = manual.cfd->SBCCompactRange(
+               *manual.cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+               manual.input_level, manual.output_level, compact_range_options,
+               manual.begin, manual.end, &manual.manual_end, &manual_conflict,
+               max_file_num_to_ignore, "");
+
+        AddManualCompaction(&manual);
+        // 创建compaction job
+        JobContext job_context(next_job_id_.fetch_add(1), true);
+        CompactionJobStats compaction_job_stats;
+        LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
+                       immutable_db_options_.info_log.get());
+
+        std::vector<SequenceNumber> snapshot_seqs;
+        SequenceNumber earliest_write_conflict_snapshot;
+        SnapshotChecker* snapshot_checker;
+        GetSnapshotContext(&job_context, &snapshot_seqs,
+                          &earliest_write_conflict_snapshot, &snapshot_checker);
+
+        auto file_option_for_sbc_ = file_options_for_compaction_;
+        file_option_for_sbc_.writable_file_max_buffer_size = 3ll << 20;
+        compaction_job = new CompactionJob(
+          job_context.job_id, compaction, immutable_db_options_, mutable_db_options_,
+          file_options_for_compaction_, versions_.get(), &shutting_down_,
+          &log_buffer, directories_.GetDbDir(),
+          GetDataDir(compaction->column_family_data(), compaction->output_path_id()),
+          GetDataDir(compaction->column_family_data(), 0), stats_, &mutex_, &error_handler_,
+          snapshot_seqs, earliest_write_conflict_snapshot, snapshot_checker,
+          &job_context, table_cache_, &event_logger_,
+          compaction->mutable_cf_options()->paranoid_file_checks,
+          compaction->mutable_cf_options()->report_bg_io_stats, dbname_,
+          &compaction_job_stats, Env::Priority::USER, io_tracer_,
+          kManualCompactionCanceledFalse_, db_id_, db_session_id_,
+          compaction->column_family_data()->GetFullHistoryTsLow(), compaction->trim_ts(),
+          &blob_callback_, &bg_compaction_scheduled_,
+          &bg_bottom_compaction_scheduled_);
+
+          // 准备sub compaction
+          compaction_job->Prepare();
+          merge_iter_builder.SetSBCJob(compaction_job);
+      }
+
+      internal_iter = merge_iter_builder.Finish(
+          options.ignore_range_deletions ? nullptr : db_iter);
+      SuperVersionHandle* cleanup = new SuperVersionHandle(
+          this, &mutex_, sv,
+          options.background_purge_on_iterator_cleanup ||
+              immutable_db_options_.avoid_unnecessary_blocking_io);
+      internal_iter->RegisterCleanup(CleanupSuperVersionHandle, cleanup, nullptr);
+      compaction_job->CreateSBCIterator(internal_iter);
+    } else {
+      CleanupSuperVersion(sv);
+    }
+  }
+  current->Unref();
+
+
+  db_iter->SetIterUnderDBIter(internal_iter);
+
+  return db_iter;
+}
+
 Status DBImpl::NewIterators(
     const ReadOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_families,

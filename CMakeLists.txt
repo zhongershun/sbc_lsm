@@ -1554,6 +1554,11 @@ if(WITH_BENCHMARK_TOOLS)
   target_link_libraries(db_bench_my2
     ${ROCKSDB_LIB} ${GFLAGS_LIB} -lpthread gtest)
 
+  add_executable(scan_based_compaction_test
+    tools/scan_based_compaction_test.cc)
+  target_link_libraries(scan_based_compaction_test
+    ${ROCKSDB_LIB} ${GFLAGS_LIB} -lpthread gtest)
+
   add_executable(aio_test
     tools/aio_test.cc)
   target_link_libraries(aio_test -lpthread gtest)

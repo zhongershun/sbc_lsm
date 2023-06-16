@@ -2521,7 +2521,7 @@ Status BlockBasedTable::WriteKeyRangeBlock() {
 
   assert(block_contents.size() == block_size + kBlockTrailerSize);
 
-  // TODO: 把这个block写进文件
+  // 把这个block写进文件
   auto file_name = rep_->file->file_name();
   std::fstream file(file_name, std::ios::in | std::ios::out | std::ios::binary);
   if (!file) {

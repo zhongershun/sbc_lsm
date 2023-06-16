@@ -986,6 +986,12 @@ class LevelIterator final : public InternalIterator {
   void Next() final override;
   bool NextAndGetResult(IterateResult* result) override;
   void Prev() override;
+  bool FromCompSST() const override {
+    return from_comp_sst_;
+  }
+  void SetFromCompSST(bool from_comp_sst) {
+    from_comp_sst_ = from_comp_sst;
+  }
 
   // In addition to valid and invalid state (!file_iter.Valid() and
   // status.ok()), a third state of the iterator is when !file_iter_.Valid() and
@@ -1183,6 +1189,7 @@ class LevelIterator final : public InternalIterator {
   // and the next file has a different prefix. SkipEmptyFileForward()
   // will not move to next file when this flag is set.
   bool prefix_exhausted_ = false;
+  bool from_comp_sst_ = false;
 };
 
 void LevelIterator::TrySetDeleteRangeSentinel(const Slice& boundary_key) {
@@ -1963,6 +1970,7 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
         TableReaderCaller::kUserIterator, IsFilterSkipped(level), level,
         /*range_del_agg=*/nullptr, /*compaction_boundaries=*/nullptr,
         allow_unprepared_value, &tombstone_iter_ptr);
+    level_iter->SetFromCompSST(true);
     if (read_options.ignore_range_deletions) {
       merge_iter_builder->AddIterator(level_iter);
     } else {

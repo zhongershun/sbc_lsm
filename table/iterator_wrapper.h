@@ -121,6 +121,9 @@ class IteratorWrapperBase {
     iter_->SeekToLast();
     Update();
   }
+  bool FromCompSST() {
+    return iter_->FromCompSST();
+  }
 
   bool MayBeOutOfLowerBound() {
     assert(Valid());

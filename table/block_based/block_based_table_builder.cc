@@ -65,7 +65,7 @@ extern const std::string kHashIndexPrefixesMetadataBlock;
 // Without anonymous namespace here, we fail the warning -Wmissing-prototypes
 namespace {
 
-#define DISP_BLOCK_KEY
+// #define DISP_BLOCK_KEY
 
 constexpr size_t kBlockTrailerSize = BlockBasedTable::kBlockTrailerSize;
 

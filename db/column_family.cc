@@ -1223,6 +1223,24 @@ Compaction* ColumnFamilyData::CompactRange(
   return result;
 }
 
+Compaction* ColumnFamilyData::SBCCompactRange(
+    const MutableCFOptions& mutable_cf_options,
+    const MutableDBOptions& mutable_db_options, int input_level,
+    int output_level, const CompactRangeOptions& compact_range_options,
+    const InternalKey* begin, const InternalKey* end,
+    InternalKey** compaction_end, bool* conflict,
+    uint64_t max_file_num_to_ignore, const std::string& trim_ts) {
+  auto* result = compaction_picker_->SBCCompactRange(
+      GetName(), mutable_cf_options, mutable_db_options,
+      current_->storage_info(), input_level, output_level,
+      compact_range_options, begin, end, compaction_end, conflict,
+      max_file_num_to_ignore, trim_ts);
+  if (result != nullptr) {
+    result->SetInputVersion(current_);
+  }
+  return result;
+}
+
 SuperVersion* ColumnFamilyData::GetReferencedSuperVersion(DBImpl* db) {
   SuperVersion* sv = GetThreadLocalSuperVersion(db);
   sv->Ref();
