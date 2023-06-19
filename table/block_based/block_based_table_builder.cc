@@ -1002,7 +1002,7 @@ void BlockBasedTableBuilder::Add(const Slice& key, const Slice& value) {
     }
 
 #ifdef DISP_BLOCK_KEY
-    std::cout << key.ToString() << " " << r->get_offset() << " " << r->data_block.GetOffset() << "\n";
+    // std::cout << key.ToString() << " " << r->get_offset() << " " << r->data_block.GetOffset() << "\n";
 #endif
 
     r->data_block.AddWithLastKey(key, value, r->last_key);
@@ -1819,19 +1819,19 @@ void BlockBasedTableBuilder::WriteKeyRangeBlock(
     BlockHandle key_range_block_handle;
     std::string first_key;
     std::string last_key;
-    std::stringstream ss_first;
-    std::stringstream ss_end;
+    std::string first;
+    std::string end;
     size_t block_size = 500;
     size_t key_size_sum = 21;
     size_t unk_size = 26;
 
-    ss_first << rep_->first_key << " " << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block;
-    rep_->key_range_block.Add("KeyStart", ss_first.str());
+    first = ToKeyRangeString(rep_->first_key, rep_->first_key_start_block_offset, rep_->first_key_start_offset_in_block);
+    rep_->key_range_block.Add("KeyStart", first);
 
-    ss_end << rep_->last_key << " " << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block;
-    rep_->key_range_block.Add("KeyEnd", ss_end.str());
+    end = ToKeyRangeString(rep_->last_key, rep_->last_key_block_offset, rep_->last_key_offset_in_block);
+    rep_->key_range_block.Add("KeyEnd", end);
 
-    std::string pedding(block_size - key_size_sum - unk_size - ss_first.str().size() - ss_end.str().size(),'t');
+    std::string pedding(block_size - key_size_sum - unk_size - first.size() - end.size(),'t');
     rep_->key_range_block.Add("Pedding", pedding);
 
     auto block_contents = rep_->key_range_block.Finish();
@@ -2044,9 +2044,9 @@ Status BlockBasedTableBuilder::Finish() {
   }
 
 #ifdef DISP_BLOCK_KEY
-  std::cout << "First key: " << rep_->first_key << " " 
+  std::cout << "First key: " << rep_->first_key.size() << " " << rep_->first_key << " " 
     << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block << "\n";
-  std::cout << "Last key: " << rep_->last_key << " "
+  std::cout << "Last key: " << rep_->last_key.size() << " " << rep_->last_key << " "
     << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block << "\n";
 #endif
   // Write meta blocks, metaindex block and footer in the following order.

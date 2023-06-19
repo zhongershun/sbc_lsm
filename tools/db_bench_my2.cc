@@ -40,7 +40,7 @@
 #include "unistd.h"
 #include "util/random.h"
 
-DEFINE_int32(value_size, 256, "");
+DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
 DEFINE_uint64(data_size, 1ll<<30, "");
@@ -54,7 +54,7 @@ DEFINE_int32(workloads, 4, "");
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
-DEFINE_bool(create_new_db, false, "");
+DEFINE_bool(create_new_db, true, "");
 DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");

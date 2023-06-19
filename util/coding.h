@@ -69,6 +69,10 @@ extern Slice GetLengthPrefixedSlice(const char* data);
 
 extern Slice GetSliceUntil(Slice* slice, char delimiter);
 
+extern std::string ToKeyRangeString(std::string &key, uint64_t block_off, uint64_t off_in_block);
+
+extern void FromKeyRangeString(std::string &raw_value, std::string &key, uint64_t &block_off, uint64_t &off_in_block);
+
 // Borrowed from
 // https://github.com/facebook/fbthrift/blob/449a5f77f9f9bae72c9eb5e78093247eef185c04/thrift/lib/cpp/util/VarintUtils-inl.h#L202-L208
 constexpr inline uint64_t i64ToZigzag(const int64_t l) {
@@ -282,6 +286,24 @@ inline bool GetFixed16(Slice* input, uint16_t* value) {
   *value = DecodeFixed16(input->data());
   input->remove_prefix(sizeof(uint16_t));
   return true;
+}
+
+inline std::string ToKeyRangeString(std::string &key, uint64_t block_off, uint64_t off_in_block) {
+  std::string result = key;
+  PutFixed64(&result, block_off);
+  PutFixed64(&result, off_in_block);
+  return result;
+}
+
+inline void FromKeyRangeString(std::string &raw_value, std::string &key, uint64_t &block_off, uint64_t &off_in_block) {
+  uint64_t off_size = sizeof(block_off);
+  Slice raw_block_off(raw_value.c_str() + 
+    (raw_value.size() - sizeof(block_off) - sizeof(off_in_block)), sizeof(block_off));
+  Slice raw_off_in_block(raw_value.c_str() + 
+    (raw_value.size() - sizeof(off_in_block)), sizeof(off_in_block));
+  GetFixed64(&raw_block_off, &block_off);
+  GetFixed64(&raw_off_in_block, &off_in_block);
+  key = raw_value.substr(0, raw_value.size() - sizeof(block_off) - sizeof(off_in_block));
 }
 
 inline bool GetVarint32(Slice* input, uint32_t* value) {
