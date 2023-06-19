@@ -610,7 +610,7 @@ struct BlockBasedTable::Rep {
 
   std::string last_key;
   uint64_t last_key_block_offset = 0;
-  int64_t last_key_offset_in_block = 0; // 这是最后一个key的偏移
+  uint64_t last_key_offset_in_block = 0; // 这是最后一个key的偏移
 
   std::string first_key;
   uint64_t first_key_start_block_offset = 0;

@@ -346,7 +346,7 @@ TEST_P(BlockBasedTableReaderTest, Scan) {
   for (iter->SeekToFirst(); iter->Valid(); iter->Next())
   {
     auto k = ToUserKey(iter->key().ToString());
-    // std::cout << k << " " << k.size() << "\n";
+    std::cout << k << " " << k.size() << "\n";
     ASSERT_EQ(iter->value().ToString(), kv[k]);
   }
 }
@@ -421,13 +421,13 @@ TEST_P(BlockBasedTableReaderTest, WriteNewKeyRangeBlock) {
   auto iter = new_table->NewIterator(ReadOptions(), nullptr, arena, 
     false, kUserIterator);
   iter->SeekToFirst();
-  std::cout << "First key: " << iter->key().ToString() << "\n";
+  std::cout << "First key: " << iter->key().ToString() << " " << iter->key().size() << "\n";
   ASSERT_TRUE(iter->Valid());
   ASSERT_EQ(iter->value().ToString(), kv[keys[6].ToString()]);
 
   iter->SeekToLast();
   ASSERT_TRUE(iter->Valid());
-  std::cout << "Last key: " << iter->key().ToString() << "\n";
+  std::cout << "Last key: " << iter->key().ToString() << " " << iter->key().size() << "\n";
   ASSERT_EQ(iter->value().ToString(), kv[keys[13].ToString()]);
 
 }

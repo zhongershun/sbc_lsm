@@ -1028,17 +1028,19 @@ Status BlockBasedTable::ReadKeyRangeBlock(const ReadOptions& ro,
 
         auto key = iter->key().ToString();
         auto value = iter->value().ToString();
-        std::stringstream ss(value);
         if (key == "KeyStart") {
-          ss >> rep_->first_key 
-             >> rep_->first_key_start_block_offset
-             >> rep_->first_key_start_offset_in_block;
+          FromKeyRangeString(value, rep_->first_key, rep_->first_key_start_block_offset, 
+            rep_->first_key_start_offset_in_block);
         }
 
         if (key == "KeyEnd") {
-          ss >> rep_->last_key
-             >> rep_->last_key_block_offset
-             >> rep_->last_key_offset_in_block;
+          FromKeyRangeString(value, rep_->last_key, rep_->last_key_block_offset, 
+            rep_->last_key_offset_in_block);
+
+          if(rep_->last_key_block_offset == 0 && rep_->last_key_offset_in_block == 0) {
+            std::cout << value.size() << value << "\n";
+            return Status::Corruption("Can not get key range data!");
+          }
         }
       }
       if(rep_->last_key_block_offset == 0 && rep_->last_key_offset_in_block == 0) {
@@ -1255,10 +1257,10 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
 }
 
 void BlockBasedTable::DisplayKeyRange() const {
-  std::cout << "FirstKey: " << rep_->first_key << " " 
+  std::cout << "FirstKey: " << rep_->first_key.size() << " "<< rep_->first_key << " " 
             << rep_->first_key_start_block_offset << " "
             << rep_->first_key_start_offset_in_block << "\n"
-            << "LastKey: " << rep_->last_key << " "
+            << "LastKey: " << rep_->last_key.size() << " " << rep_->last_key << " "
             << rep_->last_key_block_offset << " "
             << rep_->last_key_offset_in_block << "\n";
 };
@@ -2490,21 +2492,21 @@ Status BlockBasedTable::WriteKeyRangeBlock() {
   BlockBuilder key_range_block(1);
   std::string first_key;
   std::string last_key;
-  std::stringstream ss_first;
-  std::stringstream ss_end;
+  std::string first;
+  std::string end;
   Status s;
 
   size_t block_size = 500;
   size_t key_size_sum = 21;
   size_t unk_size = 26;
 
-  ss_first << rep_->first_key << " " << rep_->first_key_start_block_offset << " " << rep_->first_key_start_offset_in_block;
-  key_range_block.Add("KeyStart", ss_first.str());
+  first = ToKeyRangeString(rep_->first_key, rep_->first_key_start_block_offset, rep_->first_key_start_offset_in_block);
+  key_range_block.Add("KeyStart", first);
 
-  ss_end << rep_->last_key << " " << rep_->last_key_block_offset << " " << rep_->last_key_offset_in_block;
-  key_range_block.Add("KeyEnd", ss_end.str());
+  end = ToKeyRangeString(rep_->last_key, rep_->last_key_block_offset, rep_->last_key_offset_in_block);
+  key_range_block.Add("KeyEnd", end);
 
-  std::string pedding(block_size - key_size_sum - unk_size - ss_first.str().size() - ss_end.str().size(),'t');
+  std::string pedding(block_size - key_size_sum - unk_size - first.size() - end.size(),'t');
   key_range_block.Add("Pedding", pedding);
 
   auto block_contents = key_range_block.Finish();
