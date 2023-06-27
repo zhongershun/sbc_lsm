@@ -27,6 +27,8 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+class CompactionJob;
+
 class Iterator : public Cleanable {
  public:
   Iterator() {}
@@ -68,6 +70,18 @@ class Iterator : public Cleanable {
   // true iff the iterator was not positioned at the last entry in the source.
   // REQUIRES: Valid()
   virtual void Next() = 0;
+
+  virtual void SBCNext() {
+    abort();
+  }
+
+  virtual Status SBCIterFinish() {
+    abort();
+  }
+
+  virtual CompactionJob* GetSBCJob() {
+    abort();
+  }
 
   // Moves to the previous entry in the source.  After this call, Valid() is
   // true iff the iterator was not positioned at the first entry in source.

@@ -50,7 +50,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 1, ""); 
+DEFINE_int32(workloads, 2, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -325,6 +325,8 @@ void TestSBC() {
   if(FLAGS_disk_type == 0){
     DBPath = "/zyn/SSD/test_RocksDB/" + DBPath;
   }
+  system(("rm -rf " + DBPath).c_str());
+  system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
 
   std::cout << "DB path:" << DBPath
     << "\n Data size: " << BytesToHumanString(data_size)
@@ -376,6 +378,61 @@ void TestSBC() {
     CPU_SET(i, &cpuset);
   }
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
+  auto iter = db->NewIterator(ReadOptions());
+  std::cout << "Scan1 create iter\n";
+  auto start_ = std::chrono::system_clock::now();
+  iter->SeekToFirst();
+  while(iter->Valid()) {
+    iter->Next();
+  }
+  auto end_ = std::chrono::system_clock::now();
+  delete iter;
+  delete db;
+  std::cout << "Scan1 duration: " 
+    << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << "\n";
+
+
+  // ------------------------- CompactRange ---------------------------
+  s = DB::Open(options, DBPath, &db);
+  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  db->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+  delete db;
+
+  // ------------------------- SBC ---------------------------
+  s = DB::Open(options, DBPath, &db);
+  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  std::string key_start = "key";
+  std::string key_end = "key9";
+  start_ = std::chrono::system_clock::now();
+  iter = db->NewSBCIterator(ReadOptions(), key_start, key_end);
+  iter->Seek(key_start);
+  for(;iter->Valid() && options.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
+    iter->SBCNext();
+  }
+  end_ = std::chrono::system_clock::now();
+
+  db->FinishSBC(iter);
+  std::cout << "SBC finished table num: " << FilesPerLevel(db, 0) 
+    << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+    << "\n";
+  delete db;
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  s = DB::Open(options, DBPath, &db);
+  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  iter = db->NewIterator(ReadOptions());
+    
+  start_ = std::chrono::system_clock::now();
+  iter->SeekToFirst();
+  while(iter->Valid()) {
+    iter->Next();
+  }
+  end_ = std::chrono::system_clock::now();
+  std::cout << "Scan2 duration: " 
+    << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << "\n";
+  delete iter;
+  delete db;
 }
 
 }  // namespace ROCKSDB_NAMESPACE

@@ -196,6 +196,9 @@ class DBIter final : public Iterator {
   Status GetProperty(std::string prop_name, std::string* prop) override;
 
   void Next() final override;
+  void SBCNext() final override;
+  Status SBCIterFinish() final override;
+  CompactionJob* GetSBCJob() override;
   void Prev() final override;
   // 'target' does not contain timestamp, even if user timestamp feature is
   // enabled.

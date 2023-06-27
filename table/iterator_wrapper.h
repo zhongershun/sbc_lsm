@@ -89,6 +89,23 @@ class IteratorWrapperBase {
     valid_ = iter_->NextAndGetResult(&result_);
     assert(!valid_ || iter_->status().ok());
   }
+  void SBCNext() {
+    assert(iter_);
+    valid_ = iter_->SBCNextAndGetResult(&result_);
+    assert(!valid_ || iter_->status().ok());
+  }
+  Status SBCIterFinish() {
+    assert(iter_);
+    auto s = iter_->SBCIterFinish();
+    assert(!valid_ || iter_->status().ok());
+    return s;
+  }
+  CompactionJob* GetSBCJob() {
+    assert(iter_);
+    assert(!valid_ || iter_->status().ok());
+    return iter_->GetSBCJob();
+  }
+
   bool NextAndGetResult(IterateResult* result) {
     assert(iter_);
     valid_ = iter_->NextAndGetResult(&result_);

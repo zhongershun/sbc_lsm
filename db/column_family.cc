@@ -717,6 +717,7 @@ ColumnFamilyData::~ColumnFamilyData() {
 
 bool ColumnFamilyData::UnrefAndTryDelete() {
   int old_refs = refs_.fetch_sub(1);
+  std::cout << "Unref: " << refs_ << "\n";
   assert(old_refs > 0);
 
   if (old_refs == 1) {

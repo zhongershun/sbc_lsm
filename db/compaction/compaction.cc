@@ -11,6 +11,7 @@
 
 #include <cinttypes>
 #include <vector>
+#include <iostream>
 
 #include "db/column_family.h"
 #include "rocksdb/compaction_filter.h"
@@ -499,8 +500,14 @@ bool Compaction::IsTrivialMove() const {
 }
 
 void Compaction::AddInputDeletions(VersionEdit* out_edit) {
+#ifdef DISP_SBC
+  std::cout << "Delete old files: ";
+#endif
   for (size_t which = 0; which < num_input_levels(); which++) {
     for (size_t i = 0; i < inputs_[which].size(); i++) {
+#ifdef DISP_SBC
+      std::cout << level(which) << " " << inputs_[which][i]->fd.GetNumber() << "\n";
+#endif
       out_edit->DeleteFile(level(which), inputs_[which][i]->fd.GetNumber());
     }
   }

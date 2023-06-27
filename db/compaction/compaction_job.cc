@@ -1485,7 +1485,7 @@ Status CompactionJob::AddKeyValue() {
   const CompactionFileCloseFunc close_file_func =
     [this, sub_compact](CompactionOutputs& outputs, const Status& status,
                         const Slice& next_table_min_key) {
-      return this->SubmitFinishCompactionOutputFile(status, sub_compact, outputs,
+      return this->SBCSubmitFinishCompactionOutputFile(status, sub_compact, outputs,
                                               next_table_min_key);
     };
   SBC_iter_->SBCNext();
@@ -1534,7 +1534,7 @@ void CompactionJob::RecordDroppedKeys(
 }
 
 // TODO: 提交完就可以结束了，后续任务应该交给SBCBuffer做
-Status CompactionJob::SubmitFinishCompactionOutputFile(
+Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionOutputs& outputs, const Slice& next_table_min_key) {
   AutoThreadOperationStageUpdater stage_updater(
@@ -1581,6 +1581,8 @@ Status CompactionJob::SubmitFinishCompactionOutputFile(
 
   // NOTE: 删掉
   s = outputs.Finish(s, seqno_time_mapping_);
+  std::cout << "New files: " << meta->fd.GetNumber() << '\n';
+  outputs.DisplayKeyRange();
   // files_need_flush_.push_back({meta, outputs.GetFileWriter()});
 
   if (s.ok()) {
@@ -1607,7 +1609,6 @@ Status CompactionJob::SubmitFinishCompactionOutputFile(
   // NOTE: 删掉 Finish and check for file errors
   IOStatus io_s = outputs.WriterSyncClose(s, db_options_.clock, stats_,
                                           db_options_.use_fsync);
-
   // IOStatus io_s = IOStatus::OK();
 
   if (s.ok() && io_s.ok()) {
@@ -1884,6 +1885,63 @@ Status CompactionJob::FinishCompactionOutputFile(
 
   outputs.ResetBuilder();
   return s;
+}
+
+Compaction* CompactionJob::GetCompaction() {
+  assert(compact_->compaction);
+  return compact_->compaction;
+}
+
+JobContext* CompactionJob::GetJobCtx() {
+  assert(job_context_);
+  return job_context_;
+}
+
+void CompactionJob::ReleaseSBC() {
+  delete job_context_;
+  delete compaction_job_stats_;
+  delete log_buffer_;
+}
+
+// TODO: 添加资源监控
+Status CompactionJob::FinishSBCJob() {
+  Status status;
+  SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
+  ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
+  if (status.ok() && cfd->IsDropped()) {
+    status =
+        Status::ColumnFamilyDropped("Column family dropped during compaction");
+  }
+  if ((status.ok() || status.IsColumnFamilyDropped()) &&
+      shutting_down_->load(std::memory_order_relaxed)) {
+    status = Status::ShutdownInProgress("Database shutdown");
+  }
+  if ((status.ok() || status.IsColumnFamilyDropped()) &&
+      (manual_compaction_canceled_.load(std::memory_order_relaxed))) {
+    status = Status::Incomplete(Status::SubCode::kManualCompactionPaused);
+  }
+  if (status.ok()) {
+    status = SBC_iter_->status();
+  }
+
+  const CompactionFileOpenFunc open_file_func =
+    [this, sub_compact](CompactionOutputs& outputs) {
+      return this->OpenCompactionOutputFile(sub_compact, outputs);
+    };
+  const CompactionFileCloseFunc close_file_func =
+    [this, sub_compact](CompactionOutputs& outputs, const Status& s,
+                        const Slice& next_table_min_key) {
+      return this->SBCSubmitFinishCompactionOutputFile(s, sub_compact, outputs,
+                                              next_table_min_key);
+    };
+  status = sub_compact->CloseCompactionFiles(status, open_file_func,
+                                             close_file_func);
+  SBC_iter_.reset();
+  NotifyOnSubcompactionCompleted(sub_compact);
+
+  LogFlush(db_options_.info_log);
+  compact_->status = status;
+  return status;
 }
 
 Status CompactionJob::InstallCompactionResults(

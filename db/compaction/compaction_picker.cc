@@ -15,6 +15,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "db/column_family.h"
 #include "file/filename.h"
@@ -902,7 +903,7 @@ Compaction* CompactionPicker::SBCCompactRange(
 
   assert(input_level == ColumnFamilyData::kCompactAllLevels);
   {
-    assert(ioptions_.compaction_style == kCompactionStyleUniversal);
+    // assert(ioptions_.compaction_style == kCompactionStyleUniversal);
 
     // Universal compaction with more than one level always compacts all the
     // files together to the last level.
@@ -919,7 +920,7 @@ Compaction* CompactionPicker::SBCCompactRange(
     *compaction_end = nullptr;
 
     int start_level = 1;
-    // NOTE: 如果一层只有一个文件，那么这次就不能执行SBC
+    // NOTE: 如果一层只有一个文件，那么这层就不能执行SBC
     for (; start_level < vstorage->num_levels() &&
            vstorage->NumLevelFiles(start_level) < 2;
          start_level++) {
@@ -939,8 +940,18 @@ Compaction* CompactionPicker::SBCCompactRange(
                                              start_level);
     for (int level = vstorage->num_levels() - 1;level >= start_level; level--) {
       inputs[level - start_level].level = level;
-      vstorage->GetOverlappingInputs(input_level, begin, end, &inputs[level - start_level].files);
+      vstorage->GetOverlappingInputs(level, begin, end, &inputs[level - start_level].files);
     }
+#ifdef DISP_SBC
+    std::cout << "SBCPicker input files:\n";
+    for (int level = start_level; level < vstorage->num_levels(); level++) {
+      std::cout << "level " << level << ": ";
+      for(auto &&f : inputs[level - start_level].files) {
+        std::cout << f->fd.GetNumber() << " ";
+      }
+      std::cout << "\n";
+    }
+#endif
 
     // 2 non-exclusive manual compactions could run at the same time producing
     // overlaping outputs in the same level.

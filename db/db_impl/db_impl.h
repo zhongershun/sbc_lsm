@@ -337,7 +337,8 @@ class DBImpl : public DB {
   using DB::NewSBCIterator;
   virtual Iterator* NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
-                                 const Slice* begin, const Slice* end) override;
+                                 const std::string &begin, const std::string &end) override;
+  Status FinishSBC(Iterator* sbc_iter) override;
   virtual Status NewIterators(
       const ReadOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
@@ -2174,7 +2175,8 @@ class DBImpl : public DB {
   bool HasPendingManualCompaction();
   bool HasExclusiveManualCompaction();
   void AddManualCompaction(ManualCompactionState* m);
-  void AddSBC(DBImpl::ManualCompactionState* m);
+  void AddSBC(ManualCompactionState* m);
+  void RemoveSBC(ManualCompactionState* m);
   void RemoveManualCompaction(ManualCompactionState* m);
   bool ShouldntRunManualCompaction(ManualCompactionState* m);
   bool HaveManualCompaction(ColumnFamilyData* cfd);

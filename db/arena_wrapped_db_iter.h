@@ -69,6 +69,9 @@ class ArenaWrappedDBIter : public Iterator {
     db_iter_->SeekForPrev(target);
   }
   void Next() override { db_iter_->Next(); }
+  void SBCNext() override {db_iter_->SBCNext();}
+  Status SBCIterFinish() override {return db_iter_->SBCIterFinish();}
+  CompactionJob* GetSBCJob() override {return db_iter_->GetSBCJob();}
   void Prev() override { db_iter_->Prev(); }
   Slice key() const override { return db_iter_->key(); }
   Slice value() const override { return db_iter_->value(); }

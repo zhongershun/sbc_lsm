@@ -830,14 +830,17 @@ class DB {
   }
   virtual Iterator* NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
-                                 const Slice* begin, const Slice* end) {
+                                 const std::string &begin, const std::string &end) {
     abort();
     return nullptr;
   }
   virtual Iterator* NewSBCIterator(const ReadOptions& options, 
-                                 const Slice* begin, const Slice* end) {
+                                 const std::string &begin, const std::string &end) {
     return NewSBCIterator(options, DefaultColumnFamily(), begin, end);
   }
+  virtual Status FinishSBC(Iterator* sbc_iter) {
+    abort();
+  };
   // Returns iterators from a consistent database state across multiple
   // column families. Iterators are heap allocated and need to be deleted
   // before the db is deleted

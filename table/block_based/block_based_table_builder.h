@@ -60,6 +60,8 @@ class BlockBasedTableBuilder : public TableBuilder {
   // Return non-ok iff some error has been detected.
   Status status() const override;
 
+  void DisplayKeyRange() const override;
+
   // Return non-ok iff some error happens during IO.
   IOStatus io_status() const override;
 

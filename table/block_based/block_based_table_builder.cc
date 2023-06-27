@@ -1254,6 +1254,15 @@ void BlockBasedTableBuilder::CompressAndVerifyBlock(
   }
 }
 
+void BlockBasedTableBuilder::DisplayKeyRange() const {
+  std::cout << "FirstKey: " << rep_->first_key.size() << " "<< rep_->first_key << " " 
+            << rep_->first_key_start_block_offset << " "
+            << rep_->first_key_start_offset_in_block << "\n"
+            << "LastKey: " << rep_->last_key.size() << " " << rep_->last_key << " "
+            << rep_->last_key_block_offset << " "
+            << rep_->last_key_offset_in_block << "\n";
+};
+
 void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
     const Slice& block_contents, CompressionType type, BlockHandle* handle,
     BlockType block_type, const Slice* uncompressed_block_data) {

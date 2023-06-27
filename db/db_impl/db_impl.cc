@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "db/arena_wrapped_db_iter.h"
 #include "db/builder.h"
@@ -3397,7 +3398,7 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
 // TODO: 创建SBC迭代器
 Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
-                                 const Slice* begin, const Slice* end) {
+                                 const std::string &begin, const std::string &end) {
   if (options.managed) {
     return NewErrorIterator(
         Status::NotSupported("Managed iterator is not supported anymore."));
@@ -3490,6 +3491,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
       }
       // TODO:  创建一个合并任务，放进迭代器
       {
+        InstrumentedMutexLock l(&mutex_);
         const CompactRangeOptions compact_range_options;
         bool exclusive = true;
         int final_output_level = cfd->NumberLevels() - 1;
@@ -3498,54 +3500,54 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
           final_output_level--;
         }
         
-        ManualCompactionState manual(
+        ManualCompactionState *manual = new ManualCompactionState(
           cfd, ColumnFamilyData::kCompactAllLevels, final_output_level, 
           compact_range_options.target_path_id,
           exclusive, false, compact_range_options.canceled);
         
         InternalKey *begin_storage = new InternalKey();
         InternalKey *end_storage = new InternalKey();
-        begin_storage->SetMinPossibleForUserKey(*begin);
-        manual.begin = begin_storage;
-        end_storage->SetMaxPossibleForUserKey(*end);
-        manual.end = end_storage;
+        begin_storage->SetMinPossibleForUserKey(Slice(begin));
+        manual->begin = begin_storage;
+        end_storage->SetMaxPossibleForUserKey(Slice(end));
+        manual->end = end_storage;
 
         // TODO: 创建compaction类 参考CompactionPicker::CompactRange
         // 这里应该需要重写一个CompactRange
         bool manual_conflict;
         auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
-        Compaction* compaction = manual.cfd->SBCCompactRange(
-               *manual.cfd->GetLatestMutableCFOptions(), mutable_db_options_,
-               manual.input_level, manual.output_level, compact_range_options,
-               manual.begin, manual.end, &manual.manual_end, &manual_conflict,
-               max_file_num_to_ignore, "");
+        Compaction* compaction = manual->cfd->SBCCompactRange(
+               *manual->cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+               manual->input_level, manual->output_level, compact_range_options,
+               manual->begin, manual->end, &manual->manual_end, &manual_conflict,
+               max_file_num_to_ignore, ""); // FIXME: 这里对cfd的引用没有释放
 
-        AddManualCompaction(&manual);
+        AddSBC(manual);
         // 创建compaction job
-        JobContext job_context(next_job_id_.fetch_add(1), true);
-        CompactionJobStats compaction_job_stats;
-        LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
+        JobContext *job_context = new JobContext(next_job_id_.fetch_add(1), true);
+        CompactionJobStats *compaction_job_stats = new CompactionJobStats();
+        LogBuffer *log_buffer = new LogBuffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
 
         std::vector<SequenceNumber> snapshot_seqs;
         SequenceNumber earliest_write_conflict_snapshot;
         SnapshotChecker* snapshot_checker;
-        GetSnapshotContext(&job_context, &snapshot_seqs,
+        GetSnapshotContext(job_context, &snapshot_seqs,
                           &earliest_write_conflict_snapshot, &snapshot_checker);
 
         auto file_option_for_sbc_ = file_options_for_compaction_;
         file_option_for_sbc_.writable_file_max_buffer_size = 3ll << 20;
         compaction_job = new CompactionJob(
-          job_context.job_id, compaction, immutable_db_options_, mutable_db_options_,
+          job_context->job_id, compaction, immutable_db_options_, mutable_db_options_,
           file_options_for_compaction_, versions_.get(), &shutting_down_,
-          &log_buffer, directories_.GetDbDir(),
+          log_buffer, directories_.GetDbDir(),
           GetDataDir(compaction->column_family_data(), compaction->output_path_id()),
           GetDataDir(compaction->column_family_data(), 0), stats_, &mutex_, &error_handler_,
           snapshot_seqs, earliest_write_conflict_snapshot, snapshot_checker,
-          &job_context, table_cache_, &event_logger_,
+          job_context, table_cache_, &event_logger_,
           compaction->mutable_cf_options()->paranoid_file_checks,
           compaction->mutable_cf_options()->report_bg_io_stats, dbname_,
-          &compaction_job_stats, Env::Priority::USER, io_tracer_,
+          compaction_job_stats, Env::Priority::USER, io_tracer_,
           kManualCompactionCanceledFalse_, db_id_, db_session_id_,
           compaction->column_family_data()->GetFullHistoryTsLow(), compaction->trim_ts(),
           &blob_callback_, &bg_compaction_scheduled_,
@@ -3568,12 +3570,91 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
       CleanupSuperVersion(sv);
     }
   }
-  current->Unref();
+  current->Unref(); // NOTE: 这个不能那么轻易的Unref()
 
 
   db_iter->SetIterUnderDBIter(internal_iter);
 
   return db_iter;
+}
+
+Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
+  Status status;
+  Status s;
+  bool sfm_reserved_compact_space = false;
+  auto compaction_job = sbc_iter->GetSBCJob();
+  auto c = compaction_job->GetCompaction();
+  auto job_context = compaction_job->GetJobCtx();
+  assert(compaction_job);
+
+  compaction_job->FinishSBCJob();
+
+  InstrumentedMutexLock l(&mutex_);
+  
+  // TODO: 要先用MetaCut转换旧文件
+
+  status = compaction_job->Install(*c->mutable_cf_options());
+  if (status.ok()) {
+    assert(compaction_job->io_status().ok());
+    InstallSuperVersionAndScheduleWork(c->column_family_data(),
+                                       &job_context->superversion_contexts[0],
+                                       *c->mutable_cf_options());
+  }
+  compaction_job->io_status().PermitUncheckedError();
+  c->ReleaseCompactionFiles(s);
+  // Need to make sure SstFileManager does its bookkeeping
+  auto sfm = static_cast<SstFileManagerImpl*>(
+      immutable_db_options_.sst_file_manager.get());
+  if (sfm && sfm_reserved_compact_space) {
+    sfm->OnCompactionCompletion(c);
+  }
+
+  // ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);
+
+  // TODO: 先不管 compaction_job_info
+  // if (compaction_job_info != nullptr) {
+  //   BuildCompactionJobInfo(cfd, c.get(), s, compaction_job_stats,
+  //                          job_context->job_id, version, compaction_job_info);
+  // }
+
+  if (status.ok()) {
+    // Done
+  } else {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "[%s] [JOB %d] Scan based compaction error: %s",
+                   c->column_family_data()->GetName().c_str(),
+                   job_context->job_id, status.ToString().c_str());
+    IOStatus io_s = compaction_job->io_status();
+    if (!io_s.ok()) {
+      error_handler_.SetBGError(io_s, BackgroundErrorReason::kCompaction);
+    } else {
+      error_handler_.SetBGError(status, BackgroundErrorReason::kCompaction);
+    }
+  }
+
+#ifdef DISP_SBC
+  std::cout << "Create new files: ";
+  for (const auto& newf : c->edit()->GetNewFiles()) {
+    std::cout << newf.second.fd.GetNumber() << " ";
+  }
+  std::cout << "\n";
+#endif
+
+  RemoveSBC(nullptr); // TODO: 以后要改为删掉指定的
+  compaction_job->ReleaseSBC();
+  delete compaction_job;
+  delete c;
+  
+  mutex_.Unlock();
+  delete sbc_iter;
+  mutex_.Lock();
+
+  if (bg_compaction_scheduled_ == 0) {
+    bg_cv_.SignalAll();
+  }
+  MaybeScheduleFlushOrCompaction();
+
+  return status;
 }
 
 Status DBImpl::NewIterators(

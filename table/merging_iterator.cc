@@ -466,6 +466,34 @@ class MergingIterator : public InternalIterator {
     return is_valid;
   }
 
+  bool SBCNextAndGetResult(IterateResult* result) override {
+    SBCNext();
+    bool is_valid = Valid();
+    if (is_valid) {
+      result->key = key();
+      result->bound_check_result = UpperBoundCheckResult();
+      result->value_prepared = current_->IsValuePrepared();
+    }
+    return is_valid;
+  }
+
+  Status SBCIterFinish() override {
+    assert(compaction_job_);
+    // Status status;
+    // status = compaction_job_->Install(*(compaction_job_->GetCompaction())->mutable_cf_options());
+    // if (status.ok()) {
+    // assert(compaction_job->io_status().ok());
+    // InstallSuperVersionAndScheduleWork(c->column_family_data(),
+    //                                    &job_context->superversion_contexts[0],
+    //                                    *c->mutable_cf_options());
+    return Status::OK();
+  }
+
+  CompactionJob* GetSBCJob() override {
+    assert(compaction_job_);
+    return compaction_job_;
+  }
+
   void Prev() override {
     assert(Valid());
     // Ensure that all children are positioned before key().
@@ -617,7 +645,7 @@ class MergingIterator : public InternalIterator {
   std::unique_ptr<MergerMaxIterHeap> maxHeap_;
   PinnedIteratorsManager* pinned_iters_mgr_;
 
-  CompactionJob* compact_job_;
+  CompactionJob* compaction_job_;
 
   // Used to bound range tombstones. For point keys, DBIter and SSTable iterator
   // take care of boundary checking.
@@ -1469,13 +1497,13 @@ void MergingIterator::SBCNext() {
   FindNextVisibleKey();
   current_ = CurrentForward();
 
-  if(current_->FromCompSST()) {
-    compact_job_->AddKeyValue();
+  if(Valid()&&current_->FromCompSST()) {
+    compaction_job_->AddKeyValue();
   }
 }
 
 Status MergeIteratorBuilder::SetSBCJob(CompactionJob* compact_job) {
-  merge_iter->compact_job_ = compact_job;
+  merge_iter->compaction_job_ = compact_job;
   return Status::OK();
 }
 

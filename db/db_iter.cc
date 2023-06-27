@@ -177,6 +177,64 @@ void DBIter::Next() {
   }
 }
 
+void DBIter::SBCNext() {
+  assert(valid_);
+  assert(status_.ok());
+
+  PERF_CPU_TIMER_GUARD(iter_next_cpu_nanos, clock_);
+  // Release temporarily pinned blocks from last operation
+  ReleaseTempPinnedData();
+  ResetBlobValue();
+  ResetValueAndColumns();
+  local_stats_.skip_count_ += num_internal_keys_skipped_;
+  local_stats_.skip_count_--;
+  num_internal_keys_skipped_ = 0;
+  bool ok = true;
+  if (direction_ == kReverse) {
+    is_key_seqnum_zero_ = false;
+    if (!ReverseToForward()) {
+      ok = false;
+    }
+  } else if (!current_entry_is_merged_) {
+    // If the current value is not a merge, the iter position is the
+    // current key, which is already returned. We can safely issue a
+    // Next() without checking the current key.
+    // If the current key is a merge, very likely iter already points
+    // to the next internal position.
+    assert(iter_.Valid());
+    iter_.SBCNext();
+    PERF_COUNTER_ADD(internal_key_skipped_count, 1);
+  }
+
+  local_stats_.next_count_++;
+  if (ok && iter_.Valid()) {
+    ClearSavedValue();
+
+    if (prefix_same_as_start_) {
+      assert(prefix_extractor_ != nullptr);
+      const Slice prefix = prefix_.GetUserKey();
+      FindNextUserEntry(true /* skipping the current user key */, &prefix);
+    } else {
+      FindNextUserEntry(true /* skipping the current user key */, nullptr);
+    }
+  } else {
+    is_key_seqnum_zero_ = false;
+    valid_ = false;
+  }
+  if (statistics_ != nullptr && valid_) {
+    local_stats_.next_found_count_++;
+    local_stats_.bytes_read_ += (key().size() + value().size());
+  }
+}
+
+Status DBIter::SBCIterFinish() {
+  return iter_.SBCIterFinish();
+}
+
+CompactionJob* DBIter::GetSBCJob() {
+  return iter_.GetSBCJob();
+}
+
 bool DBIter::SetBlobValueIfNeeded(const Slice& user_key,
                                   const Slice& blob_index) {
   assert(!is_blob_);

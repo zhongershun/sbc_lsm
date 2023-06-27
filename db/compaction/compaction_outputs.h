@@ -44,6 +44,10 @@ class CompactionOutputs {
 
   CompactionOutputs() = delete;
 
+  void DisplayKeyRange() const {
+    builder_->DisplayKeyRange();
+  }
+
   explicit CompactionOutputs(const Compaction* compaction,
                              const bool is_penultimate_level);
 

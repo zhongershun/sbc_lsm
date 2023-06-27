@@ -3593,9 +3593,19 @@ void DBImpl::RemoveManualCompaction(DBImpl::ManualCompactionState* m) {
   return;
 }
 
-// 释放key的范围
 void DBImpl::AddSBC(DBImpl::ManualCompactionState* m) {
   SBC_compaction_dequeue_.push_back(m);
+}
+
+void DBImpl::RemoveSBC(ManualCompactionState* m) {
+  // TODO: 这里需要指定要删除的ManualCompactionState
+  if(m == nullptr) {
+    auto sbc_job = SBC_compaction_dequeue_.front();
+    SBC_compaction_dequeue_.pop_front();
+    delete sbc_job->begin;
+    delete sbc_job->end;
+    delete sbc_job;
+  }
 }
 
 bool DBImpl::ShouldntRunManualCompaction(ManualCompactionState* m) {

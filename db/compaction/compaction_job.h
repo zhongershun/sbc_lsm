@@ -188,7 +188,11 @@ class CompactionJob {
 
   Status CreateSBCIterator(InternalIterator *input);
 
-  Status SubmitFinishCompactionOutputFile(
+  Compaction* GetCompaction();
+  JobContext* GetJobCtx();
+  void ReleaseSBC();
+  Status FinishSBCJob();
+  Status SBCSubmitFinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionOutputs& outputs, const Slice& next_table_min_key);
 

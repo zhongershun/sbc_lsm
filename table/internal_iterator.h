@@ -79,8 +79,22 @@ class InternalIteratorBase : public Cleanable {
     abort();
   }
 
+  virtual bool SBCNextAndGetResult(IterateResult* result) {
+    abort();
+    return false;
+  }
+
   virtual bool FromCompSST() const {
     return false;
+  }
+
+  virtual Status SBCIterFinish() {
+    abort();
+    return Status::IOError();
+  }
+
+  virtual CompactionJob* GetSBCJob() {
+    abort();
   }
 
   // Moves to the next entry in the source, and return result. Iterator
