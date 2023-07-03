@@ -149,6 +149,9 @@ struct FileDescriptor {
     return static_cast<uint32_t>(packed_number_and_path_id /
                                  (kFileNumberMask + 1));
   }
+  void SetFileNumber(uint64_t number, uint32_t path_id) {
+    packed_number_and_path_id = PackFileNumberAndPathId(number, path_id);
+  }
   uint64_t GetFileSize() const { return file_size; }
 };
 

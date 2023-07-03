@@ -61,6 +61,8 @@ class VersionSet;
 
 class SubcompactionState;
 
+class ManualCompactionState;
+
 // CompactionJob is responsible for executing the compaction. Each (manual or
 // automated) compaction corresponds to a CompactionJob object, and usually
 // goes through the stages of `Prepare()`->`Run()`->`Install()`. CompactionJob
@@ -186,6 +188,13 @@ class CompactionJob {
 
   Status AddKeyValue();
 
+  Status MetaCut();
+
+  void SetKeyRange(InternalKey *begin_storage, InternalKey *end_storage) {
+    begin_storage_ = begin_storage;
+    end_storage_ = end_storage;
+  }
+
   Status CreateSBCIterator(InternalIterator *input);
 
   Compaction* GetCompaction();
@@ -228,6 +237,9 @@ class CompactionJob {
   IOStatus io_status_;
 
   CompactionJobStats* compaction_job_stats_;
+
+  InternalKey *begin_storage_;
+  InternalKey *end_storage_;
 
  private:
   struct WriteFileData {

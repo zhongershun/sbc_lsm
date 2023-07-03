@@ -279,13 +279,13 @@ struct BlockBasedTableBuilder::Rep {
   std::unique_ptr<IndexBuilder> index_builder;
   PartitionedIndexBuilder* p_index_builder_ = nullptr;
 
-  std::string last_key;
-  uint64_t last_key_block_offset;
-  int64_t last_key_offset_in_block; // 这是最后一个key的偏移
+  std::string last_key;            // 这是最后一个key
+  uint64_t last_key_block_offset;  // 这是最后一个key的后一个key的偏移
+  uint64_t last_key_offset_in_block; // 这是最后一个key的后一个key的偏移
 
   std::string first_key;
-  uint64_t first_key_start_block_offset = 0;
-  uint64_t first_key_start_offset_in_block = 0;
+  uint64_t first_key_start_block_offset = 0; // 目前没啥用
+  uint64_t first_key_start_offset_in_block = 0; // 目前没啥用
 
   const Slice* first_key_in_next_block = nullptr;
   CompressionType compression_type;

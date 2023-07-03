@@ -247,6 +247,14 @@ class Compaction {
     is_trivial_move_ = trivial_move;
   }
 
+  void PutFilesNeedCut(std::vector<std::pair<int, FileMetaData>> files_need_cut) {
+    files_need_cut_ = files_need_cut;
+  }
+
+  std::vector<std::pair<int, FileMetaData>>* GetFilesNeedCut() {
+    return &files_need_cut_;
+  }
+
   // Used when allow_trivial_move option is set in
   // Universal compaction. Returns true, if the input files
   // are non-overlapping and can be trivially moved.
@@ -471,6 +479,8 @@ class Compaction {
 
   // Compaction input files organized by level. Constant after construction
   const std::vector<CompactionInputFiles> inputs_;
+
+  std::vector<std::pair<int, FileMetaData>> files_need_cut_;
 
   // A copy of inputs_, organized more closely in memory
   autovector<LevelFilesBrief, 2> input_levels_;

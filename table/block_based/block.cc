@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "db/compaction/compaction.h"
 #include "monitoring/perf_context_imp.h"
 #include "port/port.h"
 #include "port/stack_trace.h"
@@ -269,6 +270,111 @@ void DataBlockIter::PrevImpl() {
     // Loop until end of current entry hits the start of original entry
   } while (NextEntryOffset() < original);
   prev_entries_idx_ = static_cast<int32_t>(prev_entries_.size()) - 1;
+}
+
+ uint64_t DataBlockIter::GetEndKeyOffset(const Slice& target) {
+  PERF_TIMER_GUARD(block_seek_nanos);
+  if (data_ == nullptr) {  // Not init yet
+    return UINT64_MAX;
+  }
+  uint32_t index = 0;
+  uint64_t end_key_off = 0;
+  bool skip_linear_scan = false;
+  {
+    if (restarts_ == 0) {
+      // SST files dedicated to range tombstones are written with index blocks
+      // that have no keys while also having `num_restarts_ == 1`. This would
+      // cause a problem for `BinarySeek()` as it'd try to access the first key
+      // which does not exist. We identify such blocks by the offset at which
+      // their restarts are stored, and return false to prevent any attempted
+      // key accesses.
+      return UINT64_MAX;
+    }
+
+    skip_linear_scan = false;
+    // Loop invariants:
+    // - Restart key at index `left` is less than or equal to the target key. The
+    //   sentinel index `-1` is considered to have a key that is less than all
+    //   keys.
+    // - Any restart keys after index `right` are strictly greater than the target
+    //   key.
+    int64_t left = -1, right = num_restarts_ - 1;
+    while (left != right) {
+      // The `mid` is computed by rounding up so it lands in (`left`, `right`].
+      int64_t mid = left + (right - left + 1) / 2;
+      uint32_t region_offset = GetRestartPoint(static_cast<uint32_t>(mid));
+      uint32_t shared, non_shared;
+      const char* key_ptr = DecodeKey()(
+          data_ + region_offset, data_ + restarts_, &shared, &non_shared);
+      if (key_ptr == nullptr || (shared != 0)) {
+        CorruptionError();
+        return UINT64_MAX;
+      }
+      Slice mid_key(key_ptr, non_shared);
+      raw_key_.SetKey(mid_key, false /* copy */);
+      int cmp = CompareCurrentKey(target);
+      if (cmp < 0) {
+        // Key at "mid" is smaller than "target". Therefore all
+        // blocks before "mid" are uninteresting.
+        left = mid;
+      } else if (cmp > 0) {
+        // Key at "mid" is >= "target". Therefore all blocks at or
+        // after "mid" are uninteresting.
+        right = mid - 1;
+      } else {
+        skip_linear_scan = true;
+        left = right = mid;
+      }
+    }
+
+    if (left == -1) {
+      // All keys in the block were strictly greater than `target`. So the very
+      // first key in the block is the final seek result.
+      skip_linear_scan = true;
+      index = 0;
+    } else {
+      index = static_cast<uint32_t>(left);
+    }
+  }
+
+  {
+    SeekToRestartPoint(index);
+    NextImpl();
+    int t;
+    if (!skip_linear_scan) {
+      // Linear search (within restart block) for first key >= target
+      uint32_t max_offset;
+      if (index + 1 < num_restarts_) {
+        // We are in a non-last restart interval. Since `BinarySeek()` guarantees
+        // the next restart key is strictly greater than `target`, we can
+        // terminate upon reaching it without any additional key comparison.
+        max_offset = GetRestartPoint(index + 1);
+      } else {
+        // We are in the last restart interval. The while-loop will terminate by
+        // `Valid()` returning false upon advancing past the block's last key.
+        max_offset = std::numeric_limits<uint32_t>::max();
+      }
+      while (true) {
+        NextImpl();
+        if (!Valid()) {
+          break;
+        }
+        t = CompareCurrentKey(target);
+        if (current_ == max_offset) {
+          assert(t > 0);
+          break;
+        } else if (t >= 0) {
+          break;
+        }
+      }
+    }
+    // if(t == 0 || skip_linear_scan) {
+    //   NextImpl();
+    // }
+  }
+  end_key_off = current_;
+
+  return end_key_off;
 }
 
 void DataBlockIter::SeekImpl(const Slice& target) {
@@ -585,7 +691,7 @@ template <typename DecodeEntryFunc>
 bool BlockIter<TValue>::ParseNextKey(bool* is_shared) {
   current_ = NextEntryOffset();
   const char* p = data_ + current_;
-  const char* limit = data_ + restarts_;  // Restarts come right after data
+  const char* limit = data_ + end_;  // Restarts come right after data
 
   if (p >= limit) {
     // No more entries to return.  Mark as invalid.

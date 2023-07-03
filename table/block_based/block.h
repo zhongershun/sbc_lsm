@@ -542,6 +542,8 @@ class DataBlockIter final : public BlockIter<Slice> {
     return res;
   }
 
+  uint64_t GetEndKeyOffset(const Slice& target);
+
   void Invalidate(const Status& s) override {
     BlockIter::Invalidate(s);
     // Clear prev entries cache.

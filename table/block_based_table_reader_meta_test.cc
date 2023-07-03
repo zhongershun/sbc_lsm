@@ -80,7 +80,9 @@ class BlockBasedTableReaderBaseTest : public testing::Test {
 
   virtual void ConfigureTableFactory() = 0;
 
-  void TearDown() override { EXPECT_OK(DestroyDir(env_, test_dir_)); }
+  void TearDown() override { 
+    EXPECT_OK(DestroyDir(env_, test_dir_)); 
+  }
 
   // Creates a table with the specificied key value pairs (kv).
   void CreateTable(const std::string& table_name,
@@ -429,16 +431,38 @@ TEST_P(BlockBasedTableReaderTest, WriteNewKeyRangeBlock) {
   ASSERT_TRUE(iter->Valid());
   std::cout << "Last key: " << iter->key().ToString() << " " << iter->key().size() << "\n";
   ASSERT_EQ(iter->value().ToString(), kv[keys[13].ToString()]);
-
 }
 
+
+TEST_P(BlockBasedTableReaderTest, DisplayTable) {
+  // test_dir_ = "/zyn/NVMe/zyn/coroutine_lsm/build/tools/rocksdb_bench_SBC_1GB_MetaCut_1024";
+  std::string test_table = "000087.sst";
+  std::string table_src = "/zyn/NVMe/zyn/coroutine_lsm/build/rocksdb_bench_SBC_1GB_MetaCut_1024/" + test_table;
+  system(("cp -rf " + table_src + " " + test_dir_).c_str());
+  NewBlockBasedTableReader(foptions, ioptions, comparator, test_table, &table);
+  table->DisplayKeyRange();
+  Arena* arena = new Arena();
+  auto iter = table->NewIterator(ReadOptions(), nullptr, arena, 
+    false, kUserIterator);
+  
+  iter->SeekToFirst();
+  std::cout << "First key: " << iter->key().ToString() << "\n";
+  ASSERT_TRUE(iter->Valid());
+  
+  iter->SeekToLast();
+  ASSERT_TRUE(iter->Valid());
+  std::cout << "Last key: " << iter->key().ToString() << "\n";
+
+  iter->Next();
+  ASSERT_FALSE(iter->Valid());
+}
 
 // Param 1: compression type
 // Param 2: whether to use direct reads
 // Param 3: Block Based Table Index type
 // Param 4: BBTO no_block_cache option
 INSTANTIATE_TEST_CASE_P(
-    Get, BlockBasedTableReaderTest,
+    DisplayTable, BlockBasedTableReaderTest,
     ::testing::Combine(
         ::testing::ValuesIn(GetSupportedCompressions()), ::testing::Bool(),
         ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),

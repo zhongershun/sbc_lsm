@@ -3553,6 +3553,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
           &blob_callback_, &bg_compaction_scheduled_,
           &bg_bottom_compaction_scheduled_);
 
+          compaction_job->SetKeyRange(begin_storage, end_storage);
           // 准备sub compaction
           compaction_job->Prepare();
           merge_iter_builder.SetSBCJob(compaction_job);
@@ -3591,7 +3592,14 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
 
   InstrumentedMutexLock l(&mutex_);
   
-  // TODO: 要先用MetaCut转换旧文件
+  // 要先用MetaCut转换旧文件
+  status = compaction_job->MetaCut();
+  if(!status.ok()) {
+    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                   "[%s] [JOB %d] Meta cut error: %s",
+                   c->column_family_data()->GetName().c_str(),
+                   job_context->job_id, status.ToString().c_str());
+  }
 
   status = compaction_job->Install(*c->mutable_cf_options());
   if (status.ok()) {

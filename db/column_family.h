@@ -281,7 +281,9 @@ class ColumnFamilyData {
   // holding a DB mutex, or as the leader in a write batch group).
   void Ref() { 
     refs_.fetch_add(1); 
-    std::cout << "Ref: " << refs_ << "\n";
+#ifdef DISP_SBC
+    // std::cout << "Ref: " << refs_ << "\n";
+#endif
   }
 
   // UnrefAndTryDelete() decreases the reference count and do free if needed,

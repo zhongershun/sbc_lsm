@@ -1256,6 +1256,7 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
   return s;
 }
 
+// [first_key, last_key] [kirst_key_off, last_key_off)
 void BlockBasedTable::DisplayKeyRange() const {
   std::cout << "FirstKey: " << rep_->first_key.size() << " "<< rep_->first_key << " " 
             << rep_->first_key_start_block_offset << " "
@@ -2486,6 +2487,60 @@ void BlockBasedTable::UpdateKeyRange(std::string first_k,
   rep_->last_key = last_k;
   rep_->last_key_block_offset = last_block_off;
   rep_->last_key_offset_in_block = last_k_off_in_block;
+}
+
+Status BlockBasedTable::GetEndOffset(InternalKey *key, InternalKey *last_key, uint64_t &last_block_off, uint64_t &last_k_off_in_block) {
+  Status s;
+  ReadOptions read_options;
+  bool need_upper_bound_check = false;
+  IndexBlockIter iiter_on_stack;
+  PinnableSlice value;
+  GetContext* get_context = new GetContext(BytewiseComparator(), nullptr, nullptr, nullptr,
+                             GetContext::kNotFound, *key->rep(), &value,
+                             nullptr, nullptr, nullptr, nullptr,
+                             true /* do_merge */, nullptr, nullptr, nullptr,
+                             nullptr, nullptr, nullptr);
+  uint64_t tracing_get_id = get_context->get_tracing_get_id();
+  BlockCacheLookupContext lookup_context{
+      TableReaderCaller::kUserGet, tracing_get_id,
+      /*get_from_user_specified_snapshot=*/read_options.snapshot != nullptr};
+  auto iiter =
+        NewIndexIterator(read_options, need_upper_bound_check, &iiter_on_stack,
+                         get_context, &lookup_context);
+  std::unique_ptr<InternalIteratorBase<IndexValue>> iiter_unique_ptr;
+  if (iiter != &iiter_on_stack) {
+    iiter_unique_ptr.reset(iiter);
+  }
+  bool matched = false;  // if such user key matched a key in SST
+  bool done = false;
+  bool skip_filters = true;
+  for (iiter->Seek(*key->rep()); iiter->Valid() && !done; iiter->Next()) {
+    IndexValue v = iiter->value();
+    
+    BlockCacheLookupContext lookup_data_block_context{
+        TableReaderCaller::kUserGet, tracing_get_id,
+        /*get_from_user_specified_snapshot=*/read_options.snapshot !=
+            nullptr};
+    bool does_referenced_key_exist = false;
+    DataBlockIter biter;
+    uint64_t referenced_data_size = 0;
+    Status tmp_status;
+    NewDataBlockIterator<DataBlockIter>(
+        read_options, v.handle, &biter, BlockType::kData, get_context,
+        &lookup_data_block_context, /*prefetch_buffer=*/nullptr,
+        /*for_compaction=*/false, /*async_read=*/false, tmp_status);
+
+    last_k_off_in_block = biter.GetEndKeyOffset(*key->rep());    
+    last_block_off = v.handle.offset();
+
+    done = true;
+  }
+
+  // TODO: key也需要更新
+  
+
+  delete get_context;
+  return s;
 }
 
 Status BlockBasedTable::WriteKeyRangeBlock() {

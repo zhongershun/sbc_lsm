@@ -1469,6 +1469,9 @@ InternalIterator* MergeIteratorBuilder::Finish(ArenaWrappedDBIter* db_iter) {
 
 void MergingIterator::SBCNext() {
   assert(Valid());
+  if(current_->FromCompSST()) {
+    compaction_job_->AddKeyValue();
+  }
   // Ensure that all children are positioned after key().
   // If we are moving in the forward direction, it is already
   // true for all of the non-current children since current_ is
@@ -1497,9 +1500,6 @@ void MergingIterator::SBCNext() {
   FindNextVisibleKey();
   current_ = CurrentForward();
 
-  if(Valid()&&current_->FromCompSST()) {
-    compaction_job_->AddKeyValue();
-  }
 }
 
 Status MergeIteratorBuilder::SetSBCJob(CompactionJob* compact_job) {

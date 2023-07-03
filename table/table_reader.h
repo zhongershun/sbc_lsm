@@ -138,6 +138,15 @@ class TableReader {
     return Status::NotSupported();
   }
 
+  virtual void UpdateKeyRange(std::string first_k, uint64_t first_block_off, uint64_t first_k_off_in_block,
+                      std::string last_k, uint64_t last_block_off, uint64_t last_k_off_in_block) {
+    abort();
+  }
+
+  virtual Status WriteKeyRangeBlock() {
+    return Status::NotSupported();
+  }
+
   virtual void MultiGet(const ReadOptions& readOptions,
                         const MultiGetContext::Range* mget_range,
                         const SliceTransform* prefix_extractor,

@@ -66,6 +66,7 @@ using KVPairBlock = std::vector<std::pair<std::string, std::string>>;
 // loaded blocks in the memory.
 class BlockBasedTable : public TableReader {
  public:
+  friend class CompactionJob;
   static const std::string kObsoleteFilterBlockPrefix;
   static const std::string kFullFilterBlockPrefix;
   static const std::string kPartitionedFilterBlockPrefix;
@@ -155,9 +156,13 @@ class BlockBasedTable : public TableReader {
   Status Prefetch(const Slice* begin, const Slice* end) override;
 
   void UpdateKeyRange(std::string first_k, uint64_t first_block_off, uint64_t first_k_off_in_block,
-                      std::string last_k, uint64_t last_block_off, uint64_t last_k_off_in_block);
+                      std::string last_k, uint64_t last_block_off, uint64_t last_k_off_in_block) override;
 
-  Status WriteKeyRangeBlock();
+  Status WriteKeyRangeBlock() override;
+
+  Status GetEndOffset(InternalKey *key, InternalKey *last_key, uint64_t &last_block_off, uint64_t &last_k_off_in_block);
+
+  void DisplayKeyRange() const;
 
   // Given a key, return an approximate byte offset in the file where
   // the data for that key begins (or would begin if the key were
@@ -202,7 +207,6 @@ class BlockBasedTable : public TableReader {
 
   bool TEST_FilterBlockInCache() const;
   bool TEST_IndexBlockInCache() const;
-  void DisplayKeyRange() const;
 
   // IndexReader is the interface that provides the functionality for index
   // access.
@@ -608,13 +612,13 @@ struct BlockBasedTable::Rep {
 
   std::shared_ptr<FragmentedRangeTombstoneList> fragmented_range_dels;
 
-  std::string last_key;
-  uint64_t last_key_block_offset = 0;
-  uint64_t last_key_offset_in_block = 0; // 这是最后一个key的偏移
+  std::string last_key;            // 这是最后一个key
+  uint64_t last_key_block_offset = 0;  // 这是最后一个key的后一个key的偏移
+  uint64_t last_key_offset_in_block = 0; // 这是最后一个key的后一个key的偏移
 
   std::string first_key;
-  uint64_t first_key_start_block_offset = 0;
-  uint64_t first_key_start_offset_in_block = 0;
+  uint64_t first_key_start_block_offset = 0; // 目前没啥用
+  uint64_t first_key_start_offset_in_block = 0; // 目前没啥用
 
   uint64_t key_range_block_offset = 0;
 

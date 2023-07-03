@@ -18,6 +18,8 @@
 #include <vector>
 #include <iostream>
 
+#include "table/block_based/block_based_table_reader.h"
+#include "db/db_impl/db_impl.h"
 #include "db/blob/blob_counting_iterator.h"
 #include "db/blob/blob_file_addition.h"
 #include "db/blob/blob_file_builder.h"
@@ -1581,7 +1583,9 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
 
   // NOTE: 删掉
   s = outputs.Finish(s, seqno_time_mapping_);
+#ifdef DISP_SBC
   std::cout << "New files: " << meta->fd.GetNumber() << '\n';
+#endif
   outputs.DisplayKeyRange();
   // files_need_flush_.push_back({meta, outputs.GetFileWriter()});
 
@@ -1942,6 +1946,112 @@ Status CompactionJob::FinishSBCJob() {
   LogFlush(db_options_.info_log);
   compact_->status = status;
   return status;
+}
+
+// TODO: 需要一个UndoLog保证安全
+Status CompactionJob::MetaCut() {
+  assert(compact_);
+  Status s;
+  VersionEdit* const edit = compact_->compaction->edit();
+  for (auto &&f : *compact_->compaction->GetFilesNeedCut()) {
+    auto level = f.first;
+    auto meta = f.second;
+    
+    uint64_t file_number = versions_->NewFileNumber();
+    auto old_number = meta.fd.GetNumber();
+    std::string new_fname = GetTableFileName(file_number); // NOTE: 文件地址
+    std::string old_fname = GetTableFileName(f.second.fd.GetNumber());
+
+    meta.table_reader_handle = nullptr;
+    meta.fd.SetFileNumber(file_number, compact_->compaction->output_path_id());
+
+    s = env_->RenameFile(old_fname, new_fname);
+    ColumnFamilyData* cfd = compact_->compaction->column_family_data();
+
+    auto& prefix_extractor =
+      compact_->compaction->mutable_cf_options()->prefix_extractor;
+    // ReadOptions read_options;
+    // InternalIterator* iter = cfd->table_cache()->FindTable() ->NewIterator(
+        // read_options, file_options_, cfd->internal_comparator(),
+        // meta, /*range_del_agg=*/nullptr,
+        // prefix_extractor,
+        // /*table_reader_ptr=*/nullptr,
+        // cfd->internal_stats()->GetFileReadHist(
+            // compact_->compaction->output_level()),
+        // TableReaderCaller::kCompactionRefill, /*arena=*/nullptr,
+        // /*skip_filters=*/false, compact_->compaction->output_level(),
+        // MaxFileSizeForL0MetaPin(
+            // *compact_->compaction->mutable_cf_options()),
+        // /*smallest_compaction_key=*/nullptr,
+        // /*largest_compaction_key=*/nullptr,
+        // /*allow_unprepared_value=*/false);
+    // auto s = iter->status();
+
+    s = cfd->table_cache()->FindTable(
+        ReadOptions(), file_options_,
+        cfd->internal_comparator(), meta,
+        &meta.table_reader_handle, prefix_extractor, false /*no_io */,
+        true /* record_read_stats */,
+        cfd->internal_stats()->GetFileReadHist(level), false, level,
+        true, MaxFileSizeForL0MetaPin(*cfd->GetLatestMutableCFOptions()),
+        meta.temperature);
+
+    if (s.ok() && meta.table_reader_handle != nullptr) {
+      // Load table_reader
+      meta.fd.table_reader = cfd->table_cache()->GetTableReaderFromHandle(
+          meta.table_reader_handle);
+      auto table_reader = reinterpret_cast<BlockBasedTable*>(meta.fd.table_reader);
+      uint64_t last_block_off = table_reader->rep_->last_key_block_offset;
+      uint64_t last_k_off_in_block = table_reader->rep_->last_key_offset_in_block;
+
+      if(cfd->internal_comparator().Compare(meta.smallest, *begin_storage_) < 0) {
+        table_reader->GetEndOffset(begin_storage_, &meta.largest, last_block_off, last_k_off_in_block);
+        assert(last_k_off_in_block != UINT64_MAX);
+        meta.largest.Set(begin_storage_->user_key(), 0, kTypeValue);
+      } else if(cfd->internal_comparator().Compare(*end_storage_, meta.largest) < 0) {
+        meta.smallest.Set(end_storage_->user_key(), 0, kTypeValue);
+      }
+
+#ifdef DISP_SBC
+      std::cout << "\nCut file: " << old_number << " -> " << meta.fd.GetNumber() 
+        << "\nOld KeyRange:\n";
+      table_reader->DisplayKeyRange();
+#endif
+      table_reader->UpdateKeyRange(*meta.smallest.rep(), 0, 0, 
+        *meta.largest.rep(), last_block_off, last_k_off_in_block);
+      s = table_reader->WriteKeyRangeBlock();
+#ifdef DISP_SBC
+      std::cout << "New KeyRange:\n";
+      table_reader->DisplayKeyRange();
+      // std::cout << "\n";
+#endif
+    }
+    if (s.ok()) {
+      // Report new file to SstFileManagerImpl
+      auto sfm =
+          static_cast<SstFileManagerImpl*>(db_options_.sst_file_manager.get());
+      if (sfm && meta.fd.GetPathId() == 0) {
+        Status add_s = sfm->OnAddFile(new_fname);
+        if (!add_s.ok() && s.ok()) {
+          s = add_s;
+        }
+        if (sfm->IsMaxAllowedSpaceReached()) {
+          // TODO(ajkr): should we return OK() if max space was reached by the final
+          // compaction output file (similarly to how flush works when full)?
+          s = Status::SpaceLimit("Max allowed space was reached");
+          TEST_SYNC_POINT(
+              "CompactionJob::FinishCompactionOutputFile:MaxAllowedSpaceReached");
+          InstrumentedMutexLock l(db_mutex_);
+          db_error_handler_->SetBGError(s, BackgroundErrorReason::kCompaction);
+        }
+      }
+      edit->AddFile(level, meta);
+    } else {
+      break;
+    }
+  }
+
+  return s;
 }
 
 Status CompactionJob::InstallCompactionResults(
