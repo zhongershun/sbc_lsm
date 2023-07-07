@@ -88,6 +88,10 @@ class InternalIteratorBase : public Cleanable {
     return false;
   }
 
+  virtual void SetFromCompSST(bool from_comp_sst) {
+    abort();
+  }
+
   virtual Status SBCIterFinish() {
     abort();
     return Status::IOError();

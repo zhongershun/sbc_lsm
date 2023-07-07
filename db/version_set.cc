@@ -989,7 +989,7 @@ class LevelIterator final : public InternalIterator {
   bool FromCompSST() const override {
     return from_comp_sst_;
   }
-  void SetFromCompSST(bool from_comp_sst) {
+  void SetFromCompSST(bool from_comp_sst) override {
     from_comp_sst_ = from_comp_sst;
   }
 
@@ -1900,19 +1900,26 @@ double VersionStorageInfo::GetEstimatedCompressionRatioAtLevel(
 void Version::AddIterators(const ReadOptions& read_options,
                            const FileOptions& soptions,
                            MergeIteratorBuilder* merge_iter_builder,
-                           bool allow_unprepared_value) {
+                           bool allow_unprepared_value, bool all_from_comp_sst) {
   assert(storage_info_.finalized_);
-
+  bool from_comp_sst;
   for (int level = 0; level < storage_info_.num_non_empty_levels(); level++) {
+    if(all_from_comp_sst) {
+      from_comp_sst = true;
+    } else if(level > 0) {
+      from_comp_sst = true;
+    } else {
+      from_comp_sst = false;
+    }
     AddIteratorsForLevel(read_options, soptions, merge_iter_builder, level,
-                         allow_unprepared_value);
+                         allow_unprepared_value, from_comp_sst);
   }
 }
 
 void Version::AddIteratorsForLevel(const ReadOptions& read_options,
                                    const FileOptions& soptions,
                                    MergeIteratorBuilder* merge_iter_builder,
-                                   int level, bool allow_unprepared_value) {
+                                   int level, bool allow_unprepared_value, bool from_comp_sst) {
   assert(storage_info_.finalized_);
   if (level >= storage_info_.num_non_empty_levels()) {
     // This is an empty level
@@ -1941,6 +1948,7 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
           /*largest_compaction_key=*/nullptr, allow_unprepared_value,
           &tombstone_iter);
       if (read_options.ignore_range_deletions) {
+        table_iter->SetFromCompSST(from_comp_sst);
         merge_iter_builder->AddIterator(table_iter);
       } else {
         merge_iter_builder->AddPointAndTombstoneIterator(table_iter,
@@ -1970,7 +1978,7 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
         TableReaderCaller::kUserIterator, IsFilterSkipped(level), level,
         /*range_del_agg=*/nullptr, /*compaction_boundaries=*/nullptr,
         allow_unprepared_value, &tombstone_iter_ptr);
-    level_iter->SetFromCompSST(true);
+    level_iter->SetFromCompSST(from_comp_sst);
     if (read_options.ignore_range_deletions) {
       merge_iter_builder->AddIterator(level_iter);
     } else {

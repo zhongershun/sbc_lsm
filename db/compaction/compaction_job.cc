@@ -1585,8 +1585,8 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   s = outputs.Finish(s, seqno_time_mapping_);
 #ifdef DISP_SBC
   std::cout << "New files: " << meta->fd.GetNumber() << '\n';
-#endif
   outputs.DisplayKeyRange();
+#endif
   // files_need_flush_.push_back({meta, outputs.GetFileWriter()});
 
   if (s.ok()) {

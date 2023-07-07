@@ -52,6 +52,12 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
   void Next() final override;
   bool NextAndGetResult(IterateResult* result) override;
   void Prev() override;
+  bool FromCompSST() const override {
+    return from_comp_sst_;
+  }
+  void SetFromCompSST(bool from_comp_sst) override {
+    from_comp_sst_ = from_comp_sst;
+  }
   bool Valid() const override {
     return !is_out_of_bound_ &&
            (is_at_first_key_from_index_ ||
@@ -239,6 +245,8 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
   bool need_upper_bound_check_;
 
   bool async_read_in_progress_;
+
+  bool from_comp_sst_ = false;
 
   // If `target` is null, seek to first.
   void SeekImpl(const Slice* target, bool async_prefetch);

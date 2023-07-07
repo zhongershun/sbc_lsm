@@ -14,7 +14,7 @@
 #include "rocksdb/sst_partitioner.h"
 #include "util/autovector.h"
 
-#define DISP_SBC
+// #define DISP_SBC
 
 namespace ROCKSDB_NAMESPACE {
 // The file contains class Compaction, as well as some helper functions

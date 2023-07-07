@@ -206,6 +206,7 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
       num_running_compactions_(0),
       bg_flush_scheduled_(0),
       num_running_flushes_(0),
+      scan_based_compaction_scheduled_(0),
       bg_purge_scheduled_(0),
       disable_delete_obsolete_files_(0),
       pending_purge_obsolete_files_(0),
@@ -487,7 +488,7 @@ Status DBImpl::ResumeImpl(DBRecoverContext context) {
 void DBImpl::WaitForBackgroundWork() {
   // Wait for background work to finish
   while (bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
-         bg_flush_scheduled_) {
+         bg_flush_scheduled_ || scan_based_compaction_scheduled_) {
     bg_cv_.Wait();
   }
 }
@@ -592,7 +593,7 @@ Status DBImpl::CloseHelper() {
   // Wait for background work to finish
   while (bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
          bg_flush_scheduled_ || bg_purge_scheduled_ ||
-         pending_purge_obsolete_files_ ||
+         pending_purge_obsolete_files_ || scan_based_compaction_scheduled_ ||
          error_handler_.IsRecoveryInProgress()) {
     TEST_SYNC_POINT("DBImpl::~DBImpl:WaitJob");
     bg_cv_.Wait();
@@ -1858,7 +1859,7 @@ InternalIterator* DBImpl::NewInternalIterator(
     if (read_options.read_tier != kMemtableTier) {
       super_version->current->AddIterators(read_options, file_options_,
                                            &merge_iter_builder,
-                                           allow_unprepared_value);
+                                           allow_unprepared_value, false);
     }
     internal_iter = merge_iter_builder.Finish(
         read_options.ignore_range_deletions ? nullptr : db_iter);
@@ -3395,16 +3396,20 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
   return db_iter;
 }
 
-// TODO: 创建SBC迭代器
 Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
-                                 const std::string &begin, const std::string &end) {
+                                 const std::string *begin, const std::string *end) {
+  WaitForCompact();
+  scan_based_compaction_scheduled_++;
+  Status status;
   if (options.managed) {
+    scan_based_compaction_scheduled_--;
     return NewErrorIterator(
         Status::NotSupported("Managed iterator is not supported anymore."));
   }
   Iterator* result = nullptr;
   if (options.read_tier == kPersistedTier) {
+    scan_based_compaction_scheduled_--;
     return NewErrorIterator(Status::NotSupported(
         "ReadTier::kPersistedData is not yet supported in iterators."));
   }
@@ -3415,11 +3420,13 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
     const Status s = FailIfTsMismatchCf(
         column_family, *(options.timestamp), /*ts_for_read=*/true);
     if (!s.ok()) {
+      scan_based_compaction_scheduled_--;
       return NewErrorIterator(s);
     }
   } else {
     const Status s = FailIfCfHasTs(column_family);
     if (!s.ok()) {
+      scan_based_compaction_scheduled_--;
       return NewErrorIterator(s);
     }
   }
@@ -3440,7 +3447,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
 
 
   auto* current = cfd->current();
-    current->Ref();
+  current->Ref();
   InternalIterator* internal_iter;
   CompactionJob *compaction_job;
   {
@@ -3456,7 +3463,6 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
         options.iterate_upper_bound);
     // Collect iterator for mutable memtable
     auto mem_iter = sv->mem->NewIterator(options, arena);
-    Status s;
     if (!options.ignore_range_deletions) {
       TruncatedRangeDelIterator* mem_tombstone_iter = nullptr;
       auto range_del_iter = sv->mem->NewRangeTombstoneIterator(
@@ -3476,18 +3482,18 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
     }
 
     // Collect all needed child iterators for immutable memtables
-    if (s.ok()) {
+    if (status.ok()) {
       sv->imm->AddIterators(options, &merge_iter_builder,
                                       !options.ignore_range_deletions);
     }
     TEST_SYNC_POINT_CALLBACK("DBImpl::NewSBCIterator:StatusCallback", &s);
-    if (s.ok()) {
+    if (status.ok()) {
       // Collect iterators for files in L0 - Ln
       if (options.read_tier != kMemtableTier) {
         // 这里面的iterator要清楚自己是否是需要合并的
         sv->current->AddIterators(options, file_options_,
                                             &merge_iter_builder,
-                                            true);
+                                            true, (begin == nullptr && end == nullptr));
       }
       // TODO:  创建一个合并任务，放进迭代器
       {
@@ -3504,13 +3510,18 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
           cfd, ColumnFamilyData::kCompactAllLevels, final_output_level, 
           compact_range_options.target_path_id,
           exclusive, false, compact_range_options.canceled);
-        
-        InternalKey *begin_storage = new InternalKey();
-        InternalKey *end_storage = new InternalKey();
-        begin_storage->SetMinPossibleForUserKey(Slice(begin));
-        manual->begin = begin_storage;
-        end_storage->SetMaxPossibleForUserKey(Slice(end));
-        manual->end = end_storage;
+        InternalKey *begin_storage = nullptr;
+        InternalKey *end_storage = nullptr;
+        if(begin == nullptr && end == nullptr) {
+
+        } else {
+          begin_storage = new InternalKey();
+          end_storage = new InternalKey();
+          begin_storage->SetMinPossibleForUserKey(Slice(*begin));
+          manual->begin = begin_storage;
+          end_storage->SetMaxPossibleForUserKey(Slice(*end));
+          manual->end = end_storage;
+        }
 
         // TODO: 创建compaction类 参考CompactionPicker::CompactRange
         // 这里应该需要重写一个CompactRange
@@ -3520,7 +3531,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                *manual->cfd->GetLatestMutableCFOptions(), mutable_db_options_,
                manual->input_level, manual->output_level, compact_range_options,
                manual->begin, manual->end, &manual->manual_end, &manual_conflict,
-               max_file_num_to_ignore, ""); // FIXME: 这里对cfd的引用没有释放
+               max_file_num_to_ignore, ""); 
 
         AddSBC(manual);
         // 创建compaction job
@@ -3571,11 +3582,12 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
       CleanupSuperVersion(sv);
     }
   }
-  current->Unref(); // NOTE: 这个不能那么轻易的Unref()
+  current->Unref();
 
-
-  db_iter->SetIterUnderDBIter(internal_iter);
-
+  if(status.ok()){
+    db_iter->SetIterUnderDBIter(internal_iter);
+  }
+  
   return db_iter;
 }
 
@@ -3661,9 +3673,19 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
     bg_cv_.SignalAll();
   }
   MaybeScheduleFlushOrCompaction();
+  scan_based_compaction_scheduled_--;
 
   return status;
 }
+
+
+bool DBImpl::IsCompacting() {
+  return ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
+          bg_flush_scheduled_ || scan_based_compaction_scheduled_ ||
+          (unscheduled_compactions_)) &&
+         (error_handler_.GetBGError() == Status::OK()));
+}
+
 
 Status DBImpl::NewIterators(
     const ReadOptions& read_options,
