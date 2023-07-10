@@ -409,7 +409,6 @@ void TestSBCWithoutMetaCut() {
   iter = db->NewSBCIterator(ReadOptions(), &key_start, &key_end);
   iter->Seek(key_start);
   for(;iter->Valid() && options.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
-    iter->SBCNext();
   }
   end_ = std::chrono::system_clock::now();
 
@@ -537,7 +536,6 @@ void TestSBCWithMetaCut() {
   assert(db->IsCompacting());
   iter->Seek(key_start);
   for(;iter->Valid() && options.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
-    iter->SBCNext();
   }
   end_ = std::chrono::system_clock::now();
   db->FinishSBC(iter);
@@ -646,7 +644,6 @@ void TestSBCWithFlush() {
   assert(db->IsCompacting());
   iter->Seek(key_start);
   for(;iter->Valid() && options.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
-    iter->SBCNext();
   }
   char buf[100];
   Random rnd(0);
@@ -742,8 +739,7 @@ void TestSBCScanTable() {
     options.table_factory.reset(NewBlockBasedTableFactory(table_options));
   }
 
-  auto s = DB::Open(options, DBPath, &db);
-  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  Status s;
 
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
@@ -753,7 +749,15 @@ void TestSBCScanTable() {
   }
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
-  // --------------------- 把数据从头到尾scan一遍 -----------------------
+  // ------------------------- CompactRange ---------------------------
+  // s = DB::Open(options, DBPath, &db);
+  // std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  // db->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+  // delete db;
+
+  // // --------------------- 把数据从头到尾scan一遍 -----------------------
+  s = DB::Open(options, DBPath, &db);
+  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
   auto iter = db->NewIterator(ReadOptions());
   std::cout << "Scan1 create iter\n";
   auto start_ = std::chrono::system_clock::now();
@@ -767,11 +771,20 @@ void TestSBCScanTable() {
   std::cout << "Scan1 duration: " 
     << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << "\n";
 
-
-  // ------------------------- CompactRange ---------------------------
+  // // --------------------- 把数据从头到尾scan一遍 -----------------------
   // s = DB::Open(options, DBPath, &db);
   // std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
-  // db->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+  // iter = db->NewIterator(ReadOptions());
+    
+  // start_ = std::chrono::system_clock::now();
+  // iter->SeekToFirst();
+  // while(iter->Valid()) {
+  //   iter->Next();
+  // }
+  // end_ = std::chrono::system_clock::now();
+  // std::cout << "Scan2 duration: " 
+  //   << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() << "\n";
+  // delete iter;
   // delete db;
 
   // ------------------------- SBC ------------------------------
@@ -783,7 +796,6 @@ void TestSBCScanTable() {
   iter = db->NewSBCIterator(ReadOptions(), nullptr, nullptr);
   iter->SeekToFirst();
   for(;iter->Valid();iter->SBCNext()) {
-    iter->SBCNext();
   }
   end_ = std::chrono::system_clock::now();
 

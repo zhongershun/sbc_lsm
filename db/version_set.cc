@@ -1947,8 +1947,8 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
           /*smallest_compaction_key=*/nullptr,
           /*largest_compaction_key=*/nullptr, allow_unprepared_value,
           &tombstone_iter);
+      table_iter->SetFromCompSST(from_comp_sst);
       if (read_options.ignore_range_deletions) {
-        table_iter->SetFromCompSST(from_comp_sst);
         merge_iter_builder->AddIterator(table_iter);
       } else {
         merge_iter_builder->AddPointAndTombstoneIterator(table_iter,

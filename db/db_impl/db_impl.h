@@ -340,6 +340,7 @@ class DBImpl : public DB {
                                  const std::string *begin, const std::string *end) override;
   Status FinishSBC(Iterator* sbc_iter) override;
   virtual bool IsCompacting() override;
+  virtual bool DoSBC() override;
   virtual Status NewIterators(
       const ReadOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
@@ -2555,7 +2556,7 @@ class DBImpl : public DB {
   // stores the number of flushes are currently running
   int num_running_flushes_;
 
-  int scan_based_compaction_scheduled_;
+  std::atomic<int> scan_based_compaction_scheduled_;
 
   // number of background obsolete file purge jobs, submitted to the HIGH pool
   int bg_purge_scheduled_;

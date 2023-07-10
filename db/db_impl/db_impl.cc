@@ -3400,7 +3400,6 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
   WaitForCompact();
-  scan_based_compaction_scheduled_++;
   Status status;
   if (options.managed) {
     scan_based_compaction_scheduled_--;
@@ -3486,7 +3485,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
       sv->imm->AddIterators(options, &merge_iter_builder,
                                       !options.ignore_range_deletions);
     }
-    TEST_SYNC_POINT_CALLBACK("DBImpl::NewSBCIterator:StatusCallback", &s);
+    TEST_SYNC_POINT_CALLBACK("DBImpl::NewSBCIterator:StatusCallback", &status);
     if (status.ok()) {
       // Collect iterators for files in L0 - Ln
       if (options.read_tier != kMemtableTier) {
@@ -3686,6 +3685,14 @@ bool DBImpl::IsCompacting() {
          (error_handler_.GetBGError() == Status::OK()));
 }
 
+bool DBImpl::DoSBC() { 
+  scan_based_compaction_scheduled_.fetch_add(1);
+  if(scan_based_compaction_scheduled_ == 1) {
+    return true;
+  }
+  scan_based_compaction_scheduled_.fetch_sub(1);
+  return false; 
+}
 
 Status DBImpl::NewIterators(
     const ReadOptions& read_options,

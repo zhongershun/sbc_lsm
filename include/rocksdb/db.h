@@ -842,6 +842,10 @@ class DB {
     abort();
   };
 
+  virtual bool DoSBC() {
+    abort();
+  }
+
   virtual bool IsCompacting() {
     abort();
   }

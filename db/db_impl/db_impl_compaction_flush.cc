@@ -3861,7 +3861,7 @@ Status DBImpl::WaitForCompact(bool wait_unscheduled) {
   // Wait until the compaction completes
   InstrumentedMutexLock l(&mutex_);
   while ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
-          bg_flush_scheduled_ || scan_based_compaction_scheduled_ ||
+          bg_flush_scheduled_ ||
           (wait_unscheduled && unscheduled_compactions_)) &&
          (error_handler_.GetBGError().ok())) {
     bg_cv_.Wait();
