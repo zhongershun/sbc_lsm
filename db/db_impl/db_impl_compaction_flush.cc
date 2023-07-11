@@ -2485,6 +2485,8 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
   } else if (shutting_down_.load(std::memory_order_acquire)) {
     // DB is being deleted; no more background compactions
     return;
+  } else if (scan_based_compaction_scheduled_ > 0) {
+    return;
   }
   auto bg_job_limits = GetBGJobLimits();
   bool is_flush_pool_empty =
@@ -3859,6 +3861,18 @@ void DBImpl::GetSnapshotContext(
 
 Status DBImpl::WaitForCompact(bool wait_unscheduled) {
   // Wait until the compaction completes
+  InstrumentedMutexLock l(&mutex_);
+  while ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
+          bg_flush_scheduled_ || scan_based_compaction_scheduled_ ||
+          (wait_unscheduled && unscheduled_compactions_)) &&
+         (error_handler_.GetBGError().ok())) {
+    bg_cv_.Wait();
+  }
+  return error_handler_.GetBGError();
+}
+
+Status DBImpl::WaitForBGCompact(bool wait_unscheduled) {
+  // Wait until the background compaction completes
   InstrumentedMutexLock l(&mutex_);
   while ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
           bg_flush_scheduled_ ||

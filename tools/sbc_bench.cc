@@ -49,8 +49,11 @@ DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
+DEFINE_int32(client_num_read, 0, "");
+DEFINE_int32(client_num_write, 5, "");
+DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int64(op_count, 10000, "");
-DEFINE_int32(workloads, 1, ""); 
+DEFINE_int32(workloads, 2, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -59,9 +62,10 @@ DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
-DEFINE_bool(disable_auto_compactions, true, "");
+DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 100, "");
+DEFINE_int32(run_time, 200, "Unit: second");
+DEFINE_int32(interval, 1000, "Unit: millisecond");
 
 
 #define UNUSED(v) ((void)(v))
@@ -127,6 +131,15 @@ std::string FilesPerLevel(DB *db_, int cf) {
   }
   result.resize(last_non_zero_offset);
   return result;
+}
+
+auto GetTimeNow() {
+  return std::chrono::system_clock::now();
+}
+
+int64_t GetTimeIntervalMsFrom(std::chrono::_V2::system_clock::time_point start) {
+  auto end = std::chrono::system_clock::now();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
 }
 
 }  // anonymous namespace
@@ -578,14 +591,15 @@ void TestMixWorkload() {
   
 }
 
+
 void TestMixWorkloadWithDiffThread() {
-  // cpu_set_t cpuset;
-  // CPU_ZERO(&cpuset);
-  // // 绑定到0-4核心
-  // for (int i = 0; i < 4; i++) {
-  //   CPU_SET(i, &cpuset);
-  // }
-  // int state = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  // 绑定到0-4核心
+  for (int i = 20; i < 30; i++) {
+    CPU_SET(i, &cpuset);
+  }
+  int state = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
   Options options_ins;
   options_ins.create_if_missing = true;  
@@ -594,19 +608,21 @@ void TestMixWorkloadWithDiffThread() {
   std::string DBPath = "./rocksdb_bench_my_mix_10GB_" + std::to_string(FLAGS_value_size);
   uint64_t data_size = FLAGS_data_size;
   size_t value_size = FLAGS_value_size;
-  size_t client_num = FLAGS_client_num;
+  size_t client_num_read = FLAGS_client_num_read;
+  size_t client_num_write = FLAGS_client_num_write;
+  size_t client_num_scan = FLAGS_client_num_scan;
   size_t key_num = data_size / (value_size+22ll);
   // size_t key_per_client = key_num / client_num; 
 
-  if(FLAGS_write_rate != 0) {
-    DBPath = "./rocksdb_bench_my_write_10GB_" + std::to_string(FLAGS_value_size);
+  if(FLAGS_client_num_write != 0) {
+    DBPath = "./rocksdb_bench_my_write_" + std::to_string(FLAGS_value_size);
     // system(("rm -rf " + DBPath).c_str());
     // system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
   }
 
-  if(FLAGS_disk_type == 0) {
-    DBPath = "/test/rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
-  }
+  // if(FLAGS_disk_type == 0) {
+  //   DBPath = "/test/rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
+  // }
 
 #ifndef NDEBUG
   DBPath += "_DBG";
@@ -620,12 +636,15 @@ void TestMixWorkloadWithDiffThread() {
   std::cout << "DB path:" << DBPath
     << "\n Data size: " << BytesToHumanString(data_size)
     << " MB\n ValueSize: " << FLAGS_value_size
-    << "\n KeyNum: " << key_num
-    << "\n BindCore: " << FLAGS_bind_core 
+    << "\n Bind core: " << FLAGS_bind_core 
     << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
     << "\n Distribution: " << FLAGS_distribution
-    << "\n Client num: " << client_num
-    << "\n Core num: " << FLAGS_core_num
+    << "\n Client num (Read:Write:Scan) (" << client_num_read << ", " << client_num_write << ", " << client_num_scan
+    << ")\n Core num: " << FLAGS_core_num
+    << "\n Enable sbc: " << FLAGS_enable_sbc
+    << "\n Client_num_scan: " << FLAGS_client_num_scan
+    << "\n Client_num_read: " << FLAGS_client_num_read
+    << "\n Client_num_write: " << FLAGS_client_num_write
     << "\n";
 
   std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
@@ -660,7 +679,7 @@ void TestMixWorkloadWithDiffThread() {
   Options options;
   options.use_direct_reads = true;
   options.disable_auto_compactions = FLAGS_disable_auto_compactions;
-  std::atomic<bool> running;
+  std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
   std::vector<std::vector<uint64_t>> log_[100];
@@ -685,36 +704,35 @@ void TestMixWorkloadWithDiffThread() {
 
   // TODO: 目前只判断扫表的情况
   auto IfDoSBC = [](DB *db_, std::string *begin, std::string *end, bool enable_sbc){
-    auto NumTableFilesAtLevel = [&](int level, int cf_) {
+    auto NumTableFilesAtLevel = [&](int level) {
       std::string property;
-      if (cf_ == 0) {
-        db_->GetProperty(
-            "rocksdb.num-files-at-level" + NumberToString(level), &property);
-      } else {
-        return -1;
-      }
+      db_->GetProperty(
+          "rocksdb.num-files-at-level" + NumberToString(level), &property);
       return atoi(property.c_str());
     };
 
-    if(!enable_sbc || db_->IsCompacting()) {
+    std::cout << "SBC charge: " << FilesPerLevel(db_, 0) << "\n";
+
+    if(!enable_sbc) {
       return false;
     }
     if (begin == nullptr && end == nullptr) {
-      if (NumTableFilesAtLevel(0, 0) > 2) {
-        
+      if (NumTableFilesAtLevel(0) > 2) {
         return db_->DoSBC();
       }
       return false;
     }
-
+    if(NumTableFilesAtLevel(1) > 2) {
+      return db_->DoSBC();
+    }
     return false;
   };
 
   auto ReadWrite = [&](size_t min, size_t max, int idx, OperationType op){
-    cpu_set_t cpuset;
+    // cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     // 绑定到0-4核心
-    for (int i = 0; i < FLAGS_core_num; i++) {
+    for (int i = 0; i < FLAGS_core_num; i+=1) {
       CPU_SET(i, &cpuset);
     }
     pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
@@ -814,7 +832,7 @@ void TestMixWorkloadWithDiffThread() {
         hist_[kTailReadCPU]->Add(now_cpu_micros - prev_cpu_micros);
         hist_[kTailReadIO]->Add(io_dur);
         
-        log_[idx].push_back({dur_, now_cpu_micros - prev_cpu_micros, io_dur});
+        // log_[idx].push_back({dur_, now_cpu_micros - prev_cpu_micros, io_dur});
       } else if(op == kRead) {
         // Get operation
         std::string value;
@@ -844,33 +862,29 @@ void TestMixWorkloadWithDiffThread() {
             (prev_read_nanos + prev_cpu_read_nanos + prev_cpu_write_nanos + prev_prepare_write_nanos + prev_range_sync_nanos + prev_fsync_nanos + prev_write_nanos);
         io_dur /= 1000; // ns -> us
 
-        log_[idx].push_back({dur_, now_cpu_micros - prev_cpu_micros, io_dur});
+        // log_[idx].push_back({dur_, now_cpu_micros - prev_cpu_micros, io_dur});
         hist_[kRead]->Add(dur_);
         r_count++;
       } else if(op == kScan) {
         // Scan operation
-        std::string *start = nullptr;
-        std::string *end = nullptr; 
-        int scan_len = scan_len_uniform.Next();
-        if(start == nullptr && end == nullptr){
-          scan_len = INT_MAX;
-        }
+        std::string start = "";
+        std::string end = "key9"; 
+        // int scan_len = scan_len_uniform.Next();
+        // if(start == nullptr && end == nullptr){
+        //   scan_len = INT_MAX;
+        // }
 
         auto start_ = std::chrono::system_clock::now();
-
-        if(IfDoSBC(db, start, end, FLAGS_enable_sbc)){
+        if(IfDoSBC(db, &start, &end, FLAGS_enable_sbc)){
           std::cout << "SBC start: " << FilesPerLevel(db, 0) << "\n";
-          auto iter = db->NewSBCIterator(ReadOptions(), nullptr, nullptr);
-          iter->SeekToFirst();
-          for(;iter->Valid();iter->SBCNext()) {
-          }
+          auto iter = db->NewSBCIterator(ReadOptions(), &start, &end);
+          for(iter->Seek(start);iter->Valid();iter->SBCNext()) {}
           db->FinishSBC(iter);
           std::cout << "SBC done: " << FilesPerLevel(db, 0) << "\n";
         } else {
           auto iter = db->NewIterator(ReadOptions());
-          // iter->Seek(Slice(buf, 12));
-          iter->SeekToFirst();
-          for (int i = 0; i < scan_len && iter->Valid(); i++) {
+          iter->Seek(start);
+          for (int i = 0; iter->Valid(); i++) {
             iter->Next();
           }
         }
@@ -906,6 +920,9 @@ void TestMixWorkloadWithDiffThread() {
   std::vector<std::string> cpu_set;
   CPUStat::CPU_OCCUPY cpu_stat1[20];
   CPUStat::CPU_OCCUPY cpu_stat2[20];
+  std::vector<int> tps;
+  tps.reserve(FLAGS_run_time * 1000 / FLAGS_interval);
+
   // 最多监控10个核心
   for (int i = 0; i < FLAGS_core_num && i < 10; i++) {
     cpu_set.push_back(core_name_list[i]);
@@ -916,9 +933,16 @@ void TestMixWorkloadWithDiffThread() {
   }
 
   // Workload start
-  auto start = std::chrono::system_clock::now();
-  for (size_t i = 0; i < client_num; i++) {
-    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, FLAGS_read_rate, FLAGS_write_rate, FLAGS_scan_rate));
+  auto start = GetTimeNow();
+  uint64_t op_last = op_count_;
+  for (size_t i = 0; i < client_num_read; i++) {
+    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kRead));
+  }
+  for (size_t i = 0; i < client_num_write; i++) {
+    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kWrite));
+  }
+  for (size_t i = 0; i < client_num_scan; i++) {
+    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kScan));
   }
   // Statistic CPU
   std::thread cpu_rec = std::thread(CPUStat::GetCPUStatMs, cpu_set);
@@ -928,11 +952,22 @@ void TestMixWorkloadWithDiffThread() {
   std::thread io_stat = std::thread(IOStat::GetIOStatMs, disk_name, 100000);
 
   sleep(FLAGS_run_time);
-  running = false;
+  auto run_time = FLAGS_run_time * 1000; // ms
+  auto last_time = start;
 
+  while (run_time > 0) {
+    if(GetTimeIntervalMsFrom(last_time) > FLAGS_interval) {
+      last_time = GetTimeNow();
+      tps.emplace_back(op_count_ - op_last);
+      run_time -= FLAGS_interval;
+    }
+  }
+  
+  running = false;
+  
   // Wait workload finished
-  for (size_t i = 0; i < client_num; i++) {
-    client_threads[i].join();
+  for (auto &&client_thread : client_threads) {
+    client_thread.join();
   }
   CPUStat::run = false;
   IOStat::run = false;
@@ -940,8 +975,7 @@ void TestMixWorkloadWithDiffThread() {
   io_stat.join();
 
   // Workload end
-  auto end = std::chrono::system_clock::now();
-  auto duration =  std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
+  auto duration =  GetTimeIntervalMsFrom(start);
   for (size_t i = 0; i < cpu_set.size(); i++) {
     CPUStat::get_cpuoccupy((CPUStat::CPU_OCCUPY *)&cpu_stat2[i], cpu_set[i].c_str());
     CPUStat::cal_cpuoccupy(&cpu_stat1[i], &cpu_stat2[i]);
@@ -957,8 +991,7 @@ void TestMixWorkloadWithDiffThread() {
 
   // 将读操作的记录输出到文件
   std::vector<std::vector<uint64_t>> read_op_all_;
-  for (int i = 0; i < FLAGS_client_num; i++)
-  {
+  for (int i = 0; i < FLAGS_client_num; i++) {
     read_op_all_.insert(read_op_all_.end(), log_[i].begin(), log_[i].end());
   }
   
@@ -977,9 +1010,19 @@ void TestMixWorkloadWithDiffThread() {
     }
     file.close();
   } else {
-     std::cout << "Unable to open file";
+     std::cout << "Unable to open output.csv";
   }
-  
+
+  std::ofstream optput_tps("tps.txt");
+  if (optput_tps.is_open()) {
+      for (const auto& element : tps) {
+          optput_tps << element << "\n";
+      }
+      optput_tps.close();
+      std::cout << "Write tps.txt" << std::endl;
+  } else {
+      std::cout << "Unable to open tps.txt" << std::endl;
+  }
 }
 
 
@@ -991,6 +1034,7 @@ int main(int argc, char** argv) {
   if (FLAGS_workloads == 1) {
     rocksdb::TestMixWorkload();
   } else if(FLAGS_workloads == 2) {
+    rocksdb::TestMixWorkloadWithDiffThread();
   } else if(FLAGS_workloads == 3) {
   } else {
     std::cout << "Error workload: " << FLAGS_workloads <<" workload\n";

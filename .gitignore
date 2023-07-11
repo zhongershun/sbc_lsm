@@ -100,3 +100,4 @@ core.*
 
 build*
 test_sh
+test_sh_sbc

@@ -593,7 +593,7 @@ Status DBImpl::CloseHelper() {
   // Wait for background work to finish
   while (bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
          bg_flush_scheduled_ || bg_purge_scheduled_ ||
-         pending_purge_obsolete_files_ || scan_based_compaction_scheduled_ ||
+         pending_purge_obsolete_files_ ||
          error_handler_.IsRecoveryInProgress()) {
     TEST_SYNC_POINT("DBImpl::~DBImpl:WaitJob");
     bg_cv_.Wait();
@@ -3399,7 +3399,7 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
 Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
-  WaitForCompact();
+  WaitForBGCompact();
   Status status;
   if (options.managed) {
     scan_based_compaction_scheduled_--;
@@ -3449,6 +3449,8 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
   current->Ref();
   InternalIterator* internal_iter;
   CompactionJob *compaction_job;
+  Compaction* compaction;
+  JobContext *job_context = new JobContext(next_job_id_.fetch_add(1), true);
   {
     auto arena =  db_iter->GetArena();
     auto sequence = snapshot;
@@ -3526,7 +3528,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
         // 这里应该需要重写一个CompactRange
         bool manual_conflict;
         auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
-        Compaction* compaction = manual->cfd->SBCCompactRange(
+        compaction = manual->cfd->SBCCompactRange(
                *manual->cfd->GetLatestMutableCFOptions(), mutable_db_options_,
                manual->input_level, manual->output_level, compact_range_options,
                manual->begin, manual->end, &manual->manual_end, &manual_conflict,
@@ -3534,7 +3536,6 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
 
         AddSBC(manual);
         // 创建compaction job
-        JobContext *job_context = new JobContext(next_job_id_.fetch_add(1), true);
         CompactionJobStats *compaction_job_stats = new CompactionJobStats();
         LogBuffer *log_buffer = new LogBuffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
@@ -3585,6 +3586,16 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
 
   if(status.ok()){
     db_iter->SetIterUnderDBIter(internal_iter);
+    auto stream = event_logger_.Log();
+    stream << "event" << "sbc_started";
+    for (size_t i = 0; i < compaction->num_input_levels(); ++i) {
+      stream << ("files_L" + std::to_string(compaction->level(i)));
+      stream.StartArray();
+      for (auto f : *compaction->inputs(i)) {
+        stream << f->fd.GetNumber();
+      }
+      stream.EndArray();
+    }
   }
   
   return db_iter;
@@ -3599,35 +3610,35 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
   auto job_context = compaction_job->GetJobCtx();
   assert(compaction_job);
 
-  compaction_job->FinishSBCJob();
-
+  status = compaction_job->FinishSBCJob();
   InstrumentedMutexLock l(&mutex_);
-  
-  // 要先用MetaCut转换旧文件
-  status = compaction_job->MetaCut();
-  if(!status.ok()) {
-    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
-                   "[%s] [JOB %d] Meta cut error: %s",
-                   c->column_family_data()->GetName().c_str(),
-                   job_context->job_id, status.ToString().c_str());
-  }
 
-  status = compaction_job->Install(*c->mutable_cf_options());
-  if (status.ok()) {
-    assert(compaction_job->io_status().ok());
-    InstallSuperVersionAndScheduleWork(c->column_family_data(),
-                                       &job_context->superversion_contexts[0],
-                                       *c->mutable_cf_options());
-  }
-  compaction_job->io_status().PermitUncheckedError();
-  c->ReleaseCompactionFiles(s);
-  // Need to make sure SstFileManager does its bookkeeping
-  auto sfm = static_cast<SstFileManagerImpl*>(
-      immutable_db_options_.sst_file_manager.get());
-  if (sfm && sfm_reserved_compact_space) {
-    sfm->OnCompactionCompletion(c);
-  }
+  if(status.ok()) {
+    // 要先用MetaCut转换旧文件
+    status = compaction_job->MetaCut();
+    if(!status.ok()) {
+      ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                    "[%s] [JOB %d] Meta cut error: %s",
+                    c->column_family_data()->GetName().c_str(),
+                    job_context->job_id, status.ToString().c_str());
+    }
 
+    status = compaction_job->Install(*c->mutable_cf_options());
+    if (status.ok()) {
+      assert(compaction_job->io_status().ok());
+      InstallSuperVersionAndScheduleWork(c->column_family_data(),
+                                        &job_context->superversion_contexts[0],
+                                        *c->mutable_cf_options());
+    }
+    compaction_job->io_status().PermitUncheckedError();
+    c->ReleaseCompactionFiles(s);
+    // Need to make sure SstFileManager does its bookkeeping
+    auto sfm = static_cast<SstFileManagerImpl*>(
+        immutable_db_options_.sst_file_manager.get());
+    if (sfm && sfm_reserved_compact_space) {
+      sfm->OnCompactionCompletion(c);
+    }
+  }
   // ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);
 
   // TODO: 先不管 compaction_job_info
@@ -3667,12 +3678,12 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
   mutex_.Unlock();
   delete sbc_iter;
   mutex_.Lock();
+  scan_based_compaction_scheduled_--;
 
   if (bg_compaction_scheduled_ == 0) {
     bg_cv_.SignalAll();
   }
   MaybeScheduleFlushOrCompaction();
-  scan_based_compaction_scheduled_--;
 
   return status;
 }

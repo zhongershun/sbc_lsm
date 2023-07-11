@@ -805,6 +805,24 @@ void TestSBCScanTable() {
     << "\n";
   delete db;
 
+  // ------------------------- SBC ------------------------------
+  s = DB::Open(options, DBPath, &db);
+  std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
+  key_start = "key";
+  key_end = "key9";
+  start_ = std::chrono::system_clock::now();
+  iter = db->NewSBCIterator(ReadOptions(), nullptr, nullptr);
+  iter->SeekToFirst();
+  for(;iter->Valid();iter->SBCNext()) {
+  }
+  end_ = std::chrono::system_clock::now();
+
+  db->FinishSBC(iter);
+  std::cout << "SBC finished table num: " << FilesPerLevel(db, 0) 
+    << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+    << "\n";
+  delete db;
+
   // --------------------- 把数据从头到尾scan一遍 -----------------------
   s = DB::Open(options, DBPath, &db);
   std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";

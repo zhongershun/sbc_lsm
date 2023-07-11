@@ -1945,6 +1945,27 @@ Status CompactionJob::FinishSBCJob() {
 
   LogFlush(db_options_.info_log);
   compact_->status = status;
+  if(status.ok()) {
+    auto stream = event_logger_->Log();
+    stream << "job" << job_context_->job_id << "event"
+          << "sbc_finished";
+    stream << "lsm_state";
+    stream.StartArray();
+    auto vstorage = compact_->compaction->column_family_data()->current()->storage_info();
+    for (int level = 0; level < vstorage->num_levels(); ++level) {
+      stream << vstorage->NumLevelFiles(level);
+    }
+    stream.EndArray();
+
+    const auto& blob_files = vstorage->GetBlobFiles();
+    if (!blob_files.empty()) {
+      assert(blob_files.front());
+      stream << "blob_file_head" << blob_files.front()->GetBlobFileNumber();
+
+      assert(blob_files.back());
+      stream << "blob_file_tail" << blob_files.back()->GetBlobFileNumber();
+    }
+  }
   return status;
 }
 
@@ -1952,6 +1973,7 @@ Status CompactionJob::FinishSBCJob() {
 Status CompactionJob::MetaCut() {
   assert(compact_);
   Status s;
+  bool delete_file = false;
   VersionEdit* const edit = compact_->compaction->edit();
   for (auto &&f : *compact_->compaction->GetFilesNeedCut()) {
     auto level = f.first;
@@ -2003,6 +2025,11 @@ Status CompactionJob::MetaCut() {
       auto table_reader = reinterpret_cast<BlockBasedTable*>(meta.fd.table_reader);
       uint64_t last_block_off = table_reader->rep_->last_key_block_offset;
       uint64_t last_k_off_in_block = table_reader->rep_->last_key_offset_in_block;
+      if(cfd->internal_comparator().Compare(*begin_storage_, meta.smallest) <= 0) {
+        delete_file = true;
+      } else if (cfd->internal_comparator().Compare(meta.largest, *end_storage_) <= 0) {
+        delete_file = true;
+      }
 
       if(cfd->internal_comparator().Compare(meta.smallest, *begin_storage_) < 0) {
         table_reader->GetEndOffset(begin_storage_, &meta.largest, last_block_off, last_k_off_in_block);
@@ -2011,22 +2038,22 @@ Status CompactionJob::MetaCut() {
       } else if(cfd->internal_comparator().Compare(*end_storage_, meta.largest) < 0) {
         meta.smallest.Set(end_storage_->user_key(), 0, kTypeValue);
       }
-
+      if(!delete_file) {
 #ifdef DISP_SBC
-      std::cout << "\nCut file: " << old_number << " -> " << meta.fd.GetNumber() 
-        << "\nOld KeyRange:\n";
-      table_reader->DisplayKeyRange();
+        std::cout << "\nCut file: " << old_number << " -> " << meta.fd.GetNumber() 
+          << "\nOld KeyRange:\n";
+        table_reader->DisplayKeyRange();
 #endif
-      table_reader->UpdateKeyRange(*meta.smallest.rep(), 0, 0, 
+        table_reader->UpdateKeyRange(*meta.smallest.rep(), 0, 0, 
         *meta.largest.rep(), last_block_off, last_k_off_in_block);
-      s = table_reader->WriteKeyRangeBlock();
+        s = table_reader->WriteKeyRangeBlock();
 #ifdef DISP_SBC
-      std::cout << "New KeyRange:\n";
-      table_reader->DisplayKeyRange();
-      // std::cout << "\n";
+        std::cout << "New KeyRange:\n";
+        table_reader->DisplayKeyRange();
 #endif
+      }
     }
-    if (s.ok()) {
+    if (s.ok() && !delete_file) {
       // Report new file to SstFileManagerImpl
       auto sfm =
           static_cast<SstFileManagerImpl*>(db_options_.sst_file_manager.get());
@@ -2046,8 +2073,26 @@ Status CompactionJob::MetaCut() {
         }
       }
       edit->AddFile(level, meta);
+      ROCKS_LOG_INFO(db_options_.info_log,
+               "[%s] [JOB %d] Metacut table #%" PRIu64 " -> #%" PRIu64
+               ", level %" PRIi32 ", temperature: %s",
+               cfd->GetName().c_str(), job_id_, old_number, 
+               meta.fd.GetNumber(),level,
+               temperature_to_string[meta.temperature].c_str());
+    } else if (s.ok()) {
+       ROCKS_LOG_INFO(db_options_.info_log,
+               "[%s] [JOB %d] Metacut delete old table #%" PRIu64
+               ", level %" PRIi32 ", temperature: %s",
+               cfd->GetName().c_str(), job_id_,
+               old_number, level,
+               temperature_to_string[meta.temperature].c_str());
     } else {
-      break;
+      ROCKS_LOG_ERROR(db_options_.info_log,
+               "[%s] [JOB %d] Metacut table #%" PRIu64 " -> #%" PRIu64
+               ", level %" PRIi32 ", temperature: %s",
+               cfd->GetName().c_str(), job_id_, old_number, 
+               meta.fd.GetNumber(),level,
+               temperature_to_string[meta.temperature].c_str());
     }
   }
 
