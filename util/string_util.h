@@ -78,6 +78,10 @@ extern std::string NumberToHumanString(int64_t num);
 // ex: 1048576 -> 1.00 GB
 extern std::string BytesToHumanString(uint64_t bytes);
 
+// Return a human-readable version of bytes
+// ex: 1048576 -> 1.00GB
+extern std::string BytesToHumanStringConnect(uint64_t bytes);
+
 // Return a human-readable version of unix time
 // ex: 1562116015 -> "Tue Jul  2 18:06:55 2019"
 extern std::string TimeToHumanString(int unixtime);

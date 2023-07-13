@@ -43,7 +43,7 @@
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
-DEFINE_uint64(data_size, 1ll<<30, "");
+DEFINE_uint64(data_size, 10ll<<30, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
@@ -145,8 +145,8 @@ int64_t GetTimeIntervalMsFrom(std::chrono::_V2::system_clock::time_point start) 
 }  // anonymous namespace
 
 
-void InsertData(Options options_ins, std::string DBPath, size_t key_num, 
-    std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>, std::hash<unsigned char>> &hist_) {
+void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num, 
+    std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>, std::hash<unsigned char>> *hist_) {
   DB* db = nullptr;
   std::cout << "Create a new DB start!\n";
   system((std::string("rm -rf ")+DBPath).c_str());
@@ -172,7 +172,7 @@ void InsertData(Options options_ins, std::string DBPath, size_t key_num,
         assert(ret_value == value_temp);
 #endif
       auto end_ = std::chrono::system_clock::now();
-      hist_[kInsert]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+      (*hist_)[kInsert]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
     }
   };
   std::vector<std::thread> insert_clients;
@@ -188,6 +188,38 @@ void InsertData(Options options_ins, std::string DBPath, size_t key_num,
   std::cout << "Create a new DB finished!\n";
 }
 
+
+void InsertOnly() {
+  Options options_ins;
+  options_ins.create_if_missing = true;  
+  DB* db = nullptr;
+
+  
+  uint64_t data_size = FLAGS_data_size;
+  size_t value_size = FLAGS_value_size;
+  size_t client_num = FLAGS_client_num;
+  size_t key_num = data_size / (value_size+22ll);
+  std::string DBPath = "./rocksdb_bench_my_mix_" + 
+    BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
+
+
+  if(FLAGS_disk_type == 0) {
+    DBPath = "/test/rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
+  }
+
+  std::cout << "DB path:" << DBPath
+    << "\n Data size: " << BytesToHumanString(data_size)
+    << "\n ValueSize: " << FLAGS_value_size
+    << "\n KeyNum: " << key_num
+    << "\n BindCore: " << FLAGS_bind_core 
+    << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
+    << "\n Distribution: " << FLAGS_distribution
+    << "\n Client num: " << client_num
+    << "\n Core num: " << FLAGS_core_num
+    << "\n";
+
+  InsertDataImpl(options_ins, DBPath, key_num, nullptr);
+}
 
 void TestMixWorkload() {
   // cpu_set_t cpuset;
@@ -230,7 +262,7 @@ void TestMixWorkload() {
 
   std::cout << "DB path:" << DBPath
     << "\n Data size: " << BytesToHumanString(data_size)
-    << " MB\n ValueSize: " << FLAGS_value_size
+    << "\n ValueSize: " << FLAGS_value_size
     << "\n KeyNum: " << key_num
     << "\n BindCore: " << FLAGS_bind_core 
     << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
@@ -265,7 +297,7 @@ void TestMixWorkload() {
   
   // 如果数据库打不开或者强制重建数据库，才会重新插数据
   if(FLAGS_create_new_db || s_tmp != Status::OK()){
-    InsertData(options_ins, DBPath, key_num, hist_);
+    InsertDataImpl(options_ins, DBPath, key_num, &hist_);
   }
 
   Options options;
@@ -635,7 +667,7 @@ void TestMixWorkloadWithDiffThread() {
 
   std::cout << "DB path:" << DBPath
     << "\n Data size: " << BytesToHumanString(data_size)
-    << " MB\n ValueSize: " << FLAGS_value_size
+    << "\n ValueSize: " << FLAGS_value_size
     << "\n Bind core: " << FLAGS_bind_core 
     << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
     << "\n Distribution: " << FLAGS_distribution
@@ -673,7 +705,7 @@ void TestMixWorkloadWithDiffThread() {
   
   // 如果数据库打不开或者强制重建数据库，才会重新插数据
   if(FLAGS_create_new_db || s_tmp != Status::OK()){
-    InsertData(options_ins, DBPath, key_num, hist_);
+    InsertDataImpl(options_ins, DBPath, key_num, &hist_);
   }
 
   Options options;
@@ -711,11 +743,10 @@ void TestMixWorkloadWithDiffThread() {
       return atoi(property.c_str());
     };
 
-    std::cout << "SBC charge: " << FilesPerLevel(db_, 0) << "\n";
-
     if(!enable_sbc) {
       return false;
     }
+    std::cout << "SBC charge: " << FilesPerLevel(db_, 0) << "\n";
     if (begin == nullptr && end == nullptr) {
       if (NumTableFilesAtLevel(0) > 2) {
         return db_->DoSBC();
@@ -1031,7 +1062,9 @@ void TestMixWorkloadWithDiffThread() {
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  if (FLAGS_workloads == 1) {
+  if (FLAGS_workloads == 0) {
+
+  } (FLAGS_workloads == 1) {
     rocksdb::TestMixWorkload();
   } else if(FLAGS_workloads == 2) {
     rocksdb::TestMixWorkloadWithDiffThread();
