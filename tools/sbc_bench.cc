@@ -43,7 +43,7 @@
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
-DEFINE_uint64(data_size, 10ll<<30, "");
+DEFINE_uint64(data_size, 1ll<<30, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
@@ -53,8 +53,7 @@ DEFINE_int32(client_num_read, 0, "");
 DEFINE_int32(client_num_write, 5, "");
 DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int64(op_count, 10000, "");
-DEFINE_int32(workloads, 2, ""); 
-DEFINE_int32(num_levels, 3, "");
+DEFINE_int32(workloads, 3, ""); 
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
 DEFINE_bool(create_new_db, true, "");
@@ -66,6 +65,8 @@ DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
 DEFINE_int32(run_time, 200, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
+DEFINE_int32(level_multiplier, 10, "");
+DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -142,15 +143,24 @@ int64_t GetTimeIntervalMsFrom(std::chrono::_V2::system_clock::time_point start) 
   return std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
 }
 
+int64_t GetTimeIntervalMs(std::chrono::_V2::system_clock::time_point start,
+  std::chrono::_V2::system_clock::time_point end) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
+}
+
 }  // anonymous namespace
 
 
 void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num, 
-    std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>, std::hash<unsigned char>> *hist_) {
+    std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
+    std::hash<unsigned char>> *hist_, std::vector<int> *tps) {
   DB* db = nullptr;
   std::cout << "Create a new DB start!\n";
   system((std::string("rm -rf ")+DBPath).c_str());
   DB::Open(options_ins, DBPath, &db);
+  auto last_time = std::chrono::system_clock::now();
+  uint64_t op_last = 0;
+  uint64_t op_count;
   auto loadData = [&](size_t begin, size_t end){
     Random rnd(begin);
     char buf[100];
@@ -172,7 +182,16 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
         assert(ret_value == value_temp);
 #endif
       auto end_ = std::chrono::system_clock::now();
-      (*hist_)[kInsert]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+      op_count++;
+      if(tps != nullptr && GetTimeIntervalMs(last_time, end_) > FLAGS_interval) {
+        last_time = end_;
+        tps->emplace_back(op_count - op_last);
+        op_last = op_count;
+        // std::cout << tps->back() << "\n";
+      }
+      if(hist_){
+        (*hist_)[kInsert]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+      }
     }
   };
   std::vector<std::thread> insert_clients;
@@ -192,19 +211,20 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
 void InsertOnly() {
   Options options_ins;
   options_ins.create_if_missing = true;  
+  // options_ins.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
+  options_ins.level_compaction_dynamic_level_bytes = FLAGS_level_compaction_dynamic_level_bytes;
+  // options_ins.max_bytes_for_level_base = 512ll << 20;
   DB* db = nullptr;
 
-  
   uint64_t data_size = FLAGS_data_size;
   size_t value_size = FLAGS_value_size;
   size_t client_num = FLAGS_client_num;
   size_t key_num = data_size / (value_size+22ll);
-  std::string DBPath = "./rocksdb_bench_my_mix_" + 
+  std::string DBPath = "./sbc_bench_mix_" + 
     BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
 
-
   if(FLAGS_disk_type == 0) {
-    DBPath = "/test/rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
+    DBPath = "/test/sbc_bench_mix_" + std::to_string(FLAGS_value_size);
   }
 
   std::cout << "DB path:" << DBPath
@@ -217,8 +237,23 @@ void InsertOnly() {
     << "\n Client num: " << client_num
     << "\n Core num: " << FLAGS_core_num
     << "\n";
-
-  InsertDataImpl(options_ins, DBPath, key_num, nullptr);
+  
+  std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
+                     std::hash<unsigned char>> hist_;
+  auto hist_insert = std::make_shared<HistogramImpl>();
+  hist_.insert({kInsert, std::move(hist_insert)});
+  std::vector<int> tps;
+  InsertDataImpl(options_ins, DBPath, key_num, &hist_, &tps);
+  std::ofstream optput_tps("tps.txt");
+  if (optput_tps.is_open()) {
+      for (const auto& element : tps) {
+          optput_tps << element << "\n";
+      }
+      optput_tps.close();
+      std::cout << "Write tps.txt" << std::endl;
+  } else {
+      std::cout << "Unable to open tps.txt" << std::endl;
+  }
 }
 
 void TestMixWorkload() {
@@ -297,7 +332,7 @@ void TestMixWorkload() {
   
   // 如果数据库打不开或者强制重建数据库，才会重新插数据
   if(FLAGS_create_new_db || s_tmp != Status::OK()){
-    InsertDataImpl(options_ins, DBPath, key_num, &hist_);
+    InsertDataImpl(options_ins, DBPath, key_num, &hist_, nullptr);
   }
 
   Options options;
@@ -705,7 +740,7 @@ void TestMixWorkloadWithDiffThread() {
   
   // 如果数据库打不开或者强制重建数据库，才会重新插数据
   if(FLAGS_create_new_db || s_tmp != Status::OK()){
-    InsertDataImpl(options_ins, DBPath, key_num, &hist_);
+    InsertDataImpl(options_ins, DBPath, key_num, &hist_, nullptr);
   }
 
   Options options;
@@ -1056,7 +1091,6 @@ void TestMixWorkloadWithDiffThread() {
   }
 }
 
-
 }  // namespace ROCKSDB_NAMESPACE
 
 
@@ -1064,11 +1098,12 @@ int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   if (FLAGS_workloads == 0) {
 
-  } (FLAGS_workloads == 1) {
+  } else if(FLAGS_workloads == 1) {
     rocksdb::TestMixWorkload();
   } else if(FLAGS_workloads == 2) {
     rocksdb::TestMixWorkloadWithDiffThread();
   } else if(FLAGS_workloads == 3) {
+    rocksdb::InsertOnly();
   } else {
     std::cout << "Error workload: " << FLAGS_workloads <<" workload\n";
   }
