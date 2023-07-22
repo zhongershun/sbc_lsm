@@ -43,7 +43,7 @@
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
-DEFINE_uint64(data_size, 1ll<<30, "");
+DEFINE_uint64(data_size, 256ll<<20, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
@@ -67,6 +67,8 @@ DEFINE_int32(run_time, 200, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(level_multiplier, 10, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
+DEFINE_uint64(key_range, 0, "");
+DEFINE_int32(l0_stalling_limit, 20, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -153,7 +155,7 @@ int64_t GetTimeIntervalMs(std::chrono::_V2::system_clock::time_point start,
 
 void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num, 
     std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
-    std::hash<unsigned char>> *hist_, std::vector<int> *tps) {
+    std::hash<unsigned char>> *hist_, std::vector<int> *tps = nullptr, size_t range = 0) {
   DB* db = nullptr;
   std::cout << "Create a new DB start!\n";
   system((std::string("rm -rf ")+DBPath).c_str());
@@ -166,7 +168,8 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
     char buf[100];
     std::string value_temp;
     std::default_random_engine gen_key;
-    std::uniform_int_distribution<size_t> key_gen(0, key_num);
+    auto key_range = range == 0 ? key_num : range; 
+    std::uniform_int_distribution<size_t> key_gen(0, key_range);
     for (size_t i = begin; i < end; i++) {
       value_temp = rnd.RandomString(FLAGS_value_size);
       auto start_ = std::chrono::system_clock::now();
@@ -201,8 +204,8 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
   for (auto&& c : insert_clients) {
     c.join();
   }
-  db->Flush(FlushOptions());
-  // db->WaitForCompact(1);
+  // db->Flush(FlushOptions());
+  static_cast<DBImpl*>(db)->WaitForCompact(1);
   delete db;
   std::cout << "Create a new DB finished!\n";
 }
@@ -211,6 +214,7 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
 void InsertOnly() {
   Options options_ins;
   options_ins.create_if_missing = true;  
+  options_ins.level0_slowdown_writes_trigger = FLAGS_l0_stalling_limit;
   // options_ins.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
   options_ins.level_compaction_dynamic_level_bytes = FLAGS_level_compaction_dynamic_level_bytes;
   // options_ins.max_bytes_for_level_base = 512ll << 20;
@@ -224,7 +228,8 @@ void InsertOnly() {
     BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
 
   if(FLAGS_disk_type == 0) {
-    DBPath = "/test/sbc_bench_mix_" + std::to_string(FLAGS_value_size);
+    DBPath = "/test/sbc_bench_mix_" + 
+      BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
   }
 
   std::cout << "DB path:" << DBPath
@@ -236,6 +241,8 @@ void InsertOnly() {
     << "\n Distribution: " << FLAGS_distribution
     << "\n Client num: " << client_num
     << "\n Core num: " << FLAGS_core_num
+    << "\n Key range: " << FLAGS_key_range
+    << "\n Level-0 slowdown trigger: " << FLAGS_l0_stalling_limit
     << "\n";
   
   std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
@@ -243,7 +250,7 @@ void InsertOnly() {
   auto hist_insert = std::make_shared<HistogramImpl>();
   hist_.insert({kInsert, std::move(hist_insert)});
   std::vector<int> tps;
-  InsertDataImpl(options_ins, DBPath, key_num, &hist_, &tps);
+  InsertDataImpl(options_ins, DBPath, key_num, &hist_, &tps, FLAGS_key_range);
   std::ofstream optput_tps("tps.txt");
   if (optput_tps.is_open()) {
       for (const auto& element : tps) {
@@ -255,6 +262,7 @@ void InsertOnly() {
       std::cout << "Unable to open tps.txt" << std::endl;
   }
 }
+
 
 void TestMixWorkload() {
   // cpu_set_t cpuset;
@@ -338,6 +346,7 @@ void TestMixWorkload() {
   Options options;
   options.use_direct_reads = true;
   options.disable_auto_compactions = FLAGS_disable_auto_compactions;
+  options.level0_slowdown_writes_trigger = FLAGS_l0_stalling_limit;
   std::atomic<int64_t> op_count_;
   size_t op_count_list[100];
   std::vector<std::vector<uint64_t>> log_[100];
@@ -672,7 +681,6 @@ void TestMixWorkloadWithDiffThread() {
   options_ins.create_if_missing = true;  
   DB* db = nullptr;
 
-  std::string DBPath = "./rocksdb_bench_my_mix_10GB_" + std::to_string(FLAGS_value_size);
   uint64_t data_size = FLAGS_data_size;
   size_t value_size = FLAGS_value_size;
   size_t client_num_read = FLAGS_client_num_read;
@@ -681,14 +689,18 @@ void TestMixWorkloadWithDiffThread() {
   size_t key_num = data_size / (value_size+22ll);
   // size_t key_per_client = key_num / client_num; 
 
-  if(FLAGS_client_num_write != 0) {
-    DBPath = "./rocksdb_bench_my_write_" + std::to_string(FLAGS_value_size);
-    // system(("rm -rf " + DBPath).c_str());
-    // system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
+  std::string DBPath = "./sbc_bench_mix_" + 
+    BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
+
+  if(FLAGS_disk_type == 0) {
+    DBPath = "/test/sbc_bench_mix_" + 
+      BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
   }
 
-  // if(FLAGS_disk_type == 0) {
-  //   DBPath = "/test/rocksdb_bench_my_mix_" + std::to_string(FLAGS_value_size);
+  // if(FLAGS_client_num_write != 0) {
+  //   DBPath = "./rocksdb_bench_my_write_" + std::to_string(FLAGS_value_size);
+  //   system(("rm -rf " + DBPath).c_str());
+  //   system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
   // }
 
 #ifndef NDEBUG
@@ -712,6 +724,7 @@ void TestMixWorkloadWithDiffThread() {
     << "\n Client_num_scan: " << FLAGS_client_num_scan
     << "\n Client_num_read: " << FLAGS_client_num_read
     << "\n Client_num_write: " << FLAGS_client_num_write
+    << "\n Level-0 slowdown trigger: " << FLAGS_l0_stalling_limit
     << "\n";
 
   std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
@@ -746,6 +759,7 @@ void TestMixWorkloadWithDiffThread() {
   Options options;
   options.use_direct_reads = true;
   options.disable_auto_compactions = FLAGS_disable_auto_compactions;
+  options.level0_slowdown_writes_trigger = FLAGS_l0_stalling_limit;
   std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
@@ -788,7 +802,7 @@ void TestMixWorkloadWithDiffThread() {
       }
       return false;
     }
-    if(NumTableFilesAtLevel(1) > 2) {
+    if(NumTableFilesAtLevel(2) > 10) {
       return db_->DoSBC();
     }
     return false;
@@ -1026,6 +1040,7 @@ void TestMixWorkloadWithDiffThread() {
       last_time = GetTimeNow();
       tps.emplace_back(op_count_ - op_last);
       run_time -= FLAGS_interval;
+      op_last = op_count_;
     }
   }
   

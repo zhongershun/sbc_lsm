@@ -2485,8 +2485,6 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
   } else if (shutting_down_.load(std::memory_order_acquire)) {
     // DB is being deleted; no more background compactions
     return;
-  } else if (scan_based_compaction_scheduled_ > 0) {
-    return;
   }
   auto bg_job_limits = GetBGJobLimits();
   bool is_flush_pool_empty =
@@ -3658,6 +3656,10 @@ bool DBImpl::HaveManualCompaction(ColumnFamilyData* cfd) {
 }
 
 bool DBImpl::HasExclusiveManualCompaction() {
+  if (scan_based_compaction_scheduled_ > 0) {
+    return true;
+  }
+
   // Remove from priority queue
   std::deque<ManualCompactionState*>::iterator it =
       manual_compaction_dequeue_.begin();

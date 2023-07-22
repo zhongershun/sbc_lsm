@@ -1472,6 +1472,7 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input) {
       db_options_.info_log, full_history_ts_low, preserve_time_min_seqno_,
       preclude_last_level_min_seqno_);
   SBC_iter_->SeekToFirst();
+  start_micros_ = db_options_.clock->NowMicros();
   return SBC_iter_->status();
 }
 
@@ -1945,10 +1946,57 @@ Status CompactionJob::FinishSBCJob() {
 
   LogFlush(db_options_.info_log);
   compact_->status = status;
+
+  // auto& comp_stats = compaction_stats_.stats;
+  // UpdateCompactionJobStats(comp_stats);
+
+  // for (auto& state : compact_->sub_compact_states) {
+  //   write_io += (state.compaction_job_stats.file_write_nanos 
+  //     + state.compaction_job_stats.file_fsync_nanos 
+  //     + state.compaction_job_stats.file_range_sync_nanos
+  //     + state.compaction_job_stats.file_prepare_write_nanos);
+  //   read_io += (state.compaction_job_stats.file_read_nanos);
+    
+  //   state.RemoveLastEmptyOutput();
+  // }
+  compaction_stats_.AddCpuMicros(sub_compact->compaction_job_stats.cpu_micros);
+  compaction_stats_.SetMicros(db_options_.clock->NowMicros() - start_micros_);
+  auto& stats = compaction_stats_.stats;
+
   if(status.ok()) {
     auto stream = event_logger_->Log();
     stream << "job" << job_context_->job_id << "event"
           << "sbc_finished";
+    stream << "compaction_time_micros" << stats.micros
+         << "compaction_time_cpu_micros" << stats.cpu_micros << "output_level"
+         << compact_->compaction->output_level() << "num_output_files"
+         << stats.num_output_files << "total_output_size"
+         << stats.bytes_written;
+
+    if (stats.num_output_files_blob > 0) {
+      stream << "num_blob_output_files" << stats.num_output_files_blob
+            << "total_blob_output_size" << stats.bytes_written_blob;
+    }
+
+    stream << "num_input_records" << stats.num_input_records
+          << "num_output_records" << stats.num_output_records
+          << "num_subcompactions" << compact_->sub_compact_states.size()
+          << "output_compression"
+          << CompressionTypeToString(compact_->compaction->output_compression());
+
+    stream << "num_single_delete_mismatches"
+          << compaction_job_stats_->num_single_del_mismatch;
+    stream << "num_single_delete_fallthrough"
+          << compaction_job_stats_->num_single_del_fallthru;
+
+    if (measure_io_stats_) {
+      stream << "file_write_nanos" << compaction_job_stats_->file_write_nanos;
+      stream << "file_range_sync_nanos"
+            << compaction_job_stats_->file_range_sync_nanos;
+      stream << "file_fsync_nanos" << compaction_job_stats_->file_fsync_nanos;
+      stream << "file_prepare_write_nanos"
+            << compaction_job_stats_->file_prepare_write_nanos;
+    }
     stream << "lsm_state";
     stream.StartArray();
     auto vstorage = compact_->compaction->column_family_data()->current()->storage_info();

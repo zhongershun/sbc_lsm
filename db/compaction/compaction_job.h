@@ -241,6 +241,8 @@ class CompactionJob {
   InternalKey *begin_storage_;
   InternalKey *end_storage_;
 
+  uint64_t start_micros_;
+
  private:
   struct WriteFileData {
     FileMetaData *meta_;
