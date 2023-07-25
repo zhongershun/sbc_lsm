@@ -204,7 +204,7 @@ void InsertDataImpl(Options options_ins, std::string DBPath, size_t key_num,
   for (auto&& c : insert_clients) {
     c.join();
   }
-  // db->Flush(FlushOptions());
+  db->Flush(FlushOptions());
   static_cast<DBImpl*>(db)->WaitForCompact(1);
   delete db;
   std::cout << "Create a new DB finished!\n";

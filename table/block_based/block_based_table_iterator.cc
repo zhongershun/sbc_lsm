@@ -7,11 +7,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "table/block_based/block_based_table_iterator.h"
+#include <iostream>
 
 namespace ROCKSDB_NAMESPACE {
 
 void BlockBasedTableIterator::SeekToFirst() { 
   Slice first_key = Slice(table_->get_rep()->first_key);
+#if 0
+  std::cout << "Seek(" << table_->get_rep()->sst_number_for_tracing() << ", "
+    << table_->get_rep()->level_for_tracing() << ", "<< first_key.ToString() << ")\n";
+#endif
   SeekImpl(&first_key, false); 
 }
 
@@ -231,6 +236,12 @@ bool BlockBasedTableIterator::NextAndGetResult(IterateResult* result) {
     result->key = key();
     result->bound_check_result = UpperBoundCheckResult();
     result->value_prepared = !is_at_first_key_from_index_;
+  } else {
+#if false
+  std::cout << "Iter finished (" << table_->get_rep()->sst_number_for_tracing() << ", "
+    << table_->get_rep()->level_for_tracing() << ")\n";
+  int t;
+#endif
   }
   return is_valid;
 }
@@ -414,7 +425,8 @@ void BlockBasedTableIterator::FindBlockForward() {
       // We need to make sure this is not the last data block before setting
       // is_out_of_bound_, since the index key for the last data block can be
       // larger than smallest key of the next file on the same level.
-      if (index_iter_->Valid()) {
+      if (index_iter_->Valid()&&
+        !(index_iter_->value().handle.offset() >= table_->get_rep()->last_key_block_offset)) {
         is_out_of_bound_ = true;
       }
       return;

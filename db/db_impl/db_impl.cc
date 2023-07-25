@@ -3524,8 +3524,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
           manual->end = end_storage;
         }
 
-        // TODO: 创建compaction类 参考CompactionPicker::CompactRange
-        // 这里应该需要重写一个CompactRange
+        // NOTE: 这里保证compaction能创建成功
         bool manual_conflict;
         auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
         compaction = manual->cfd->SBCCompactRange(
@@ -3533,7 +3532,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                manual->input_level, manual->output_level, compact_range_options,
                manual->begin, manual->end, &manual->manual_end, &manual_conflict,
                max_file_num_to_ignore, ""); 
-
+        assert(compaction != nullptr);
         AddSBC(manual);
         // 创建compaction job
         CompactionJobStats *compaction_job_stats = new CompactionJobStats();

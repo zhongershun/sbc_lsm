@@ -1425,6 +1425,11 @@ void LevelIterator::Prev() {
 bool LevelIterator::SkipEmptyFileForward() {
   bool seen_empty_file = false;
   // Pause at sentinel key
+#if 0
+  std::cout << "SeekNextFile: " << level_ << ", file_number: " 
+    << flevel_->files[file_index_].fd.GetNumber() << ", idx: " << file_index_ 
+    << ", total: " << flevel_->num_files << "\n";
+#endif
   while (!to_return_sentinel_ &&
          (file_iter_.iter() == nullptr ||
           (!file_iter_.Valid() && file_iter_.status().ok() &&

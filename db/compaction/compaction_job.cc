@@ -1944,22 +1944,30 @@ Status CompactionJob::FinishSBCJob() {
   SBC_iter_.reset();
   NotifyOnSubcompactionCompleted(sub_compact);
 
+  TablePropertiesCollection tp;
+  for (const auto& state : compact_->sub_compact_states) {
+    for (const auto& output : state.GetOutputs()) {
+      auto fn =
+          TableFileName(state.compaction->immutable_options()->cf_paths,
+                        output.meta.fd.GetNumber(), output.meta.fd.GetPathId());
+      tp[fn] = output.table_properties;
+    }
+  }
+  compact_->compaction->SetOutputTableProperties(std::move(tp));
+
+  // Finish up all book-keeping to unify the subcompaction results
+  compact_->AggregateCompactionStats(compaction_stats_, *compaction_job_stats_);
+  UpdateCompactionStats();
+  RecordCompactionIOStats();
+
   LogFlush(db_options_.info_log);
   compact_->status = status;
 
-  // auto& comp_stats = compaction_stats_.stats;
-  // UpdateCompactionJobStats(comp_stats);
+  for (auto& state : compact_->sub_compact_states) {
+    compaction_stats_.AddCpuMicros(state.compaction_job_stats.cpu_micros);
+    state.RemoveLastEmptyOutput();
+  }
 
-  // for (auto& state : compact_->sub_compact_states) {
-  //   write_io += (state.compaction_job_stats.file_write_nanos 
-  //     + state.compaction_job_stats.file_fsync_nanos 
-  //     + state.compaction_job_stats.file_range_sync_nanos
-  //     + state.compaction_job_stats.file_prepare_write_nanos);
-  //   read_io += (state.compaction_job_stats.file_read_nanos);
-    
-  //   state.RemoveLastEmptyOutput();
-  // }
-  compaction_stats_.AddCpuMicros(sub_compact->compaction_job_stats.cpu_micros);
   compaction_stats_.SetMicros(db_options_.clock->NowMicros() - start_micros_);
   auto& stats = compaction_stats_.stats;
 
@@ -2040,22 +2048,6 @@ Status CompactionJob::MetaCut() {
 
     auto& prefix_extractor =
       compact_->compaction->mutable_cf_options()->prefix_extractor;
-    // ReadOptions read_options;
-    // InternalIterator* iter = cfd->table_cache()->FindTable() ->NewIterator(
-        // read_options, file_options_, cfd->internal_comparator(),
-        // meta, /*range_del_agg=*/nullptr,
-        // prefix_extractor,
-        // /*table_reader_ptr=*/nullptr,
-        // cfd->internal_stats()->GetFileReadHist(
-            // compact_->compaction->output_level()),
-        // TableReaderCaller::kCompactionRefill, /*arena=*/nullptr,
-        // /*skip_filters=*/false, compact_->compaction->output_level(),
-        // MaxFileSizeForL0MetaPin(
-            // *compact_->compaction->mutable_cf_options()),
-        // /*smallest_compaction_key=*/nullptr,
-        // /*largest_compaction_key=*/nullptr,
-        // /*allow_unprepared_value=*/false);
-    // auto s = iter->status();
 
     s = cfd->table_cache()->FindTable(
         ReadOptions(), file_options_,
@@ -2073,9 +2065,10 @@ Status CompactionJob::MetaCut() {
       auto table_reader = reinterpret_cast<BlockBasedTable*>(meta.fd.table_reader);
       uint64_t last_block_off = table_reader->rep_->last_key_block_offset;
       uint64_t last_k_off_in_block = table_reader->rep_->last_key_offset_in_block;
-      if(cfd->internal_comparator().Compare(*begin_storage_, meta.smallest) <= 0) {
-        delete_file = true;
-      } else if (cfd->internal_comparator().Compare(meta.largest, *end_storage_) <= 0) {
+
+      // if SBC range cover the metacut file, then delete the file
+      if(cfd->internal_comparator().Compare(*begin_storage_, meta.smallest) <= 0 &&
+         cfd->internal_comparator().Compare(meta.largest, *end_storage_) <= 0) {
         delete_file = true;
       }
 
@@ -2086,6 +2079,7 @@ Status CompactionJob::MetaCut() {
       } else if(cfd->internal_comparator().Compare(*end_storage_, meta.largest) < 0) {
         meta.smallest.Set(end_storage_->user_key(), 0, kTypeValue);
       }
+
       if(!delete_file) {
 #ifdef DISP_SBC
         std::cout << "\nCut file: " << old_number << " -> " << meta.fd.GetNumber() 

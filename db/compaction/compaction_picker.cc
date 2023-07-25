@@ -955,7 +955,17 @@ Compaction* CompactionPicker::SBCCompactRange(
       std::cout << "\n";
     }
 #endif
-
+    EventLogger log(ioptions_.logger);
+    auto stream = log.Log();
+    stream << "event" << "SBCPicker input files";
+    for (int level = start_level; level < vstorage->num_levels(); level++) {
+      stream << ("files_L" + std::to_string(level));
+      stream.StartArray();
+      for(auto &&f : inputs[level - start_level].files) {
+        stream << f->fd.GetNumber();
+      }
+      stream.EndArray();
+    }
     // 2 non-exclusive manual compactions could run at the same time producing
     // overlaping outputs in the same level.
     if (FilesRangeOverlapWithCompaction(
@@ -1002,48 +1012,73 @@ Compaction* CompactionPicker::SBCCompactRange(
     assert(end != nullptr);
     *compaction_end = nullptr;
 
-    int begin_level = 1;
-    for (; begin_level < vstorage->num_levels() &&
-           vstorage->NumLevelFiles(begin_level) == 0;
-         begin_level++) {
+    int start_level = 1;
+    for (; start_level < vstorage->num_levels() &&
+           vstorage->NumLevelFiles(start_level) == 0;
+         start_level++) {
     }
 
-    // NOTE: 如果一层只有一个文件，那么这层就不能执行SBC
-    int start_level = vstorage->num_levels();
-    while (start_level > begin_level &&
-           vstorage->NumLevelFiles(start_level-1) != 1) {
-      start_level--;
-    }
     if (start_level == vstorage->num_levels()) {
       return nullptr;
+    }
+    
+    // NOTE: 如果一层只有一个文件，那么这层就不能执行SBC
+    std::vector<CompactionInputFiles> inputs;
+    for (int level = vstorage->num_levels() - 1;level >= start_level; level--) {
+      CompactionInputFiles input;
+      input.level = level;
+      vstorage->GetOverlappingInputs(level, begin, end, &input.files);
+      if(input.files.size() == 1 && input.level != vstorage->num_levels() - 1) {
+        start_level = level;
+        break;
+      } else if(input.files.size() > 0) {
+        inputs.emplace(inputs.begin(), input);
+      }
     }
 
     if ((start_level == 0) && (!level0_compactions_in_progress_.empty())) {
       *manual_conflict = true;
       // Only one level 0 compaction allowed
       return nullptr;
-    }    
-    // NOTE: 把所有的文件都放进来
-    std::vector<CompactionInputFiles> inputs(vstorage->num_levels() -
-                                             start_level);
-    for (int level = vstorage->num_levels() - 1;level >= start_level; level--) {
-      inputs[level - start_level].level = level;
-      vstorage->GetOverlappingInputs(level, begin, end, &inputs[level - start_level].files);
     }
+
     // TODO: 这里要把切割的文件摘出来 
     std::vector<std::pair<int, FileMetaData>> files_need_cut;
-    for (int level = start_level; level < vstorage->num_levels(); level++) {
-      if(inputs[level - start_level].files.size()) {
-        assert(inputs[level - start_level].files.size() > 1);
-        files_need_cut.emplace_back(level, *inputs[level - start_level].files.front());
-        files_need_cut.emplace_back(level, *inputs[level - start_level].files.back());
+
+    for (auto &&level : inputs) {
+      // assert(level.files.size() > 1);
+      if (level.files.size() <= 1) {
+        break;
       }
+      files_need_cut.emplace_back(level.level, *level.files.front());
+      files_need_cut.emplace_back(level.level, *level.files.back());
     }
-#ifdef DISP_SBC
+    
+
+    EventLogger log(ioptions_.logger);
+    auto stream = log.Log();
+    stream << "event" << "SBCPicker input files";
+    for (auto &&level : inputs) {
+      stream << ("files_L" + std::to_string(level.level));
+      stream.StartArray();
+      for(auto &&f : level.files) {
+        stream << f->fd.GetNumber();
+      }
+      stream.EndArray();
+    }
+
+    stream << "files need cut";
+    stream.StartArray();
+    for (auto &&f : files_need_cut) {
+      stream << f.second.fd.GetNumber();
+    }
+    stream.EndArray();
+
+#ifndef NDEDBG
     std::cout << "SBCPicker input files:\n";
-    for (int level = start_level; level < vstorage->num_levels(); level++) {
-      std::cout << "level " << level << ": ";
-      for(auto &&f : inputs[level - start_level].files) {
+    for (auto &&level : inputs) {
+      std::cout << "level " << level.level << ": ";
+      for(auto &&f : level.files) {
         std::cout << f->fd.GetNumber() << " ";
       }
       std::cout << "\n";
@@ -1065,7 +1100,7 @@ Compaction* CompactionPicker::SBCCompactRange(
       *manual_conflict = true;
       return nullptr;
     }
-
+    assert(inputs.size());
     Compaction* c = new Compaction(
         vstorage, ioptions_, mutable_cf_options, mutable_db_options,
         std::move(inputs), output_level,
