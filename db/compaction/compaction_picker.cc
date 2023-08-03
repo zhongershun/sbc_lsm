@@ -1074,7 +1074,7 @@ Compaction* CompactionPicker::SBCCompactRange(
     }
     stream.EndArray();
 
-#ifndef NDEDBG
+#ifndef NDEBUG
     std::cout << "SBCPicker input files:\n";
     for (auto &&level : inputs) {
       std::cout << "level " << level.level << ": ";

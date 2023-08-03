@@ -23,6 +23,7 @@
 #include "util/string_util.h"
 #include "util/cpu_info.h"
 #include "util/io_info.h"
+#include "util/random.h"
 #include "monitoring/histogram.h"
 #include "utilities/distribution_generator.h"
 #include "monitoring/iostats_context_imp.h"
@@ -38,32 +39,32 @@
 #include "pthread.h"
 #include "time.h"
 #include "unistd.h"
-#include "util/random.h"
+#include <filesystem>
 
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
 DEFINE_bool(bind_core, true, "");
-DEFINE_uint64(data_size, 256ll<<20, "");
+DEFINE_uint64(data_size, 1024ll<<20, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
-DEFINE_int32(client_num_write, 5, "");
+DEFINE_int32(client_num_write, 9, "");
 DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int64(op_count, 10000, "");
-DEFINE_int32(workloads, 3, ""); 
+DEFINE_int32(workloads, 2, ""); 
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
-DEFINE_bool(create_new_db, true, "");
+DEFINE_bool(create_new_db, false, "");
 DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 200, "Unit: second");
+DEFINE_int32(run_time, 10, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(level_multiplier, 10, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
@@ -671,12 +672,14 @@ void TestMixWorkload() {
 void TestMixWorkloadWithDiffThread() {
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
-  // 绑定到0-4核心
-  for (int i = 20; i < 30; i++) {
-    CPU_SET(i, &cpuset);
+  if(FLAGS_bind_core) {
+    // 绑定到0-4核心
+    for (int i = 20; i < 30; i++) {
+      CPU_SET(i, &cpuset);
+    }
+    int state = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
   }
-  int state = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
+  
   Options options_ins;
   options_ins.create_if_missing = true;  
   DB* db = nullptr;
@@ -692,8 +695,9 @@ void TestMixWorkloadWithDiffThread() {
   std::string DBPath = "./sbc_bench_mix_" + 
     BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
 
+  std::string DataRaw = DBPath + "_raw"; // 这是已经插入完成的数据，可以直接用
   if(FLAGS_disk_type == 0) {
-    DBPath = "/test/sbc_bench_mix_" + 
+    DBPath = "/zyn/SSD/sbc_bench_mix_" + 
       BytesToHumanStringConnect(data_size) +"_" + std::to_string(FLAGS_value_size);
   }
 
@@ -745,6 +749,13 @@ void TestMixWorkloadWithDiffThread() {
   hist_.insert({kTailReadCPU, std::move(hist_tail_read_cpu)});
   hist_.insert({kTailReadIO, std::move(hist_tail_read_io)});
 
+  if (access(DataRaw.c_str(), 0) == 0) {
+    // 文件夹存在
+    system(("rm -rf " + DBPath).c_str());
+    system(("cp -rf " + DataRaw + " " + DBPath).c_str());
+    std::cout << "Copy " << DataRaw << " to " << DBPath << "\n";
+  }
+
   // 判断数据库能不能打开，不能打开就要重新插数据
   DB *db_tmp = nullptr;
   Options opt_tmp;
@@ -760,18 +771,13 @@ void TestMixWorkloadWithDiffThread() {
   options.use_direct_reads = true;
   options.disable_auto_compactions = FLAGS_disable_auto_compactions;
   options.level0_slowdown_writes_trigger = FLAGS_l0_stalling_limit;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
+  options.enable_sbc = FLAGS_enable_sbc;
   std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
   std::vector<std::vector<uint64_t>> log_[100];
-
-  if(FLAGS_disableWAL){
-    options.write_buffer_size = 100ll << 30;
-    options.disable_auto_compactions = true;
-    options.level0_file_num_compaction_trigger = 1000000;
-    options.level0_slowdown_writes_trigger = 1000000;
-    options.level0_stop_writes_trigger = 1000000;
-  }
 
   if(FLAGS_cache_size > 0) {
     std::shared_ptr<Cache> cache = NewLRUCache(FLAGS_cache_size);
@@ -802,20 +808,20 @@ void TestMixWorkloadWithDiffThread() {
       }
       return false;
     }
-    if(NumTableFilesAtLevel(2) > 10) {
+    if(NumTableFilesAtLevel(1)+NumTableFilesAtLevel(2) + NumTableFilesAtLevel(3) + NumTableFilesAtLevel(4) + NumTableFilesAtLevel(5) > NumTableFilesAtLevel(6)) {
       return db_->DoSBC();
     }
     return false;
   };
 
   auto ReadWrite = [&](size_t min, size_t max, int idx, OperationType op){
-    // cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    // 绑定到0-4核心
-    for (int i = 0; i < FLAGS_core_num; i+=1) {
-      CPU_SET(i, &cpuset);
+    if(FLAGS_bind_core) {
+      // 绑定核心
+      for (int i = 0; i < FLAGS_core_num; i++) {
+        CPU_SET(i, &cpuset);
+      }
+      int state = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     }
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
     unsigned long seed_;
     Random rnd(301);
@@ -826,7 +832,7 @@ void TestMixWorkloadWithDiffThread() {
     // UniformGenerator key_gen_uniform(min, max);
     // Random key_gen_uniform(idx);
     UniformGenerator scan_len_uniform(10, 1000);
-    ZipfianGenerator key_gen_zipfian(min, max);
+    // ZipfianGenerator key_gen_zipfian(min, max);  // FIXME: 这里的范围过大会导致启动这个函数极慢
 
     Env *env = Env::Default();
     SystemClock *clock = env->GetSystemClock().get();
@@ -866,10 +872,11 @@ void TestMixWorkloadWithDiffThread() {
     
     while(running) {
       size_t key;
+      key = key_gen_uniform(gen_key);
       if(FLAGS_distribution == 0) {
-        key = key_gen_uniform(gen_key);
+        
       } else if(FLAGS_distribution == 1) {
-        key = key_gen_zipfian.Next_hash();
+        // key = key_gen_zipfian.Next_hash();
       } else {
         abort();
       }
@@ -980,7 +987,6 @@ void TestMixWorkloadWithDiffThread() {
     }
     std::cout<<"Thread: " << idx 
       <<", Write:Read:Scan (" << w_count<<", "<<r_count<<", " << scan_count << ")\n";
-
   };
   
   std::string core_name_list[10] = {
@@ -1016,22 +1022,22 @@ void TestMixWorkloadWithDiffThread() {
   auto start = GetTimeNow();
   uint64_t op_last = op_count_;
   for (size_t i = 0; i < client_num_read; i++) {
-    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kRead));
+    client_threads.emplace_back(std::thread(ReadWrite, 0, FLAGS_key_range, i, kRead));
   }
   for (size_t i = 0; i < client_num_write; i++) {
-    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kWrite));
+    client_threads.emplace_back(std::thread(ReadWrite, 0, FLAGS_key_range, i, kWrite));
   }
   for (size_t i = 0; i < client_num_scan; i++) {
-    client_threads.emplace_back(std::thread(ReadWrite, 0, key_num, i, kScan));
+    client_threads.emplace_back(std::thread(ReadWrite, 0, FLAGS_key_range, i, kScan));
   }
   // Statistic CPU
   std::thread cpu_rec = std::thread(CPUStat::GetCPUStatMs, cpu_set);
 
   // Statistic IO
-  std::string disk_name = "nvme2n1p1 ";
-  std::thread io_stat = std::thread(IOStat::GetIOStatMs, disk_name, 100000);
+  // std::string disk_name = "nvme2n1p1 ";
+  // std::thread io_stat = std::thread(IOStat::GetIOStatMs, disk_name, 100000);
 
-  sleep(FLAGS_run_time);
+  // sleep(FLAGS_run_time);
   auto run_time = FLAGS_run_time * 1000; // ms
   auto last_time = start;
 
@@ -1053,7 +1059,7 @@ void TestMixWorkloadWithDiffThread() {
   CPUStat::run = false;
   IOStat::run = false;
   cpu_rec.join();
-  io_stat.join();
+  // io_stat.join();
 
   // Workload end
   auto duration =  GetTimeIntervalMsFrom(start);
