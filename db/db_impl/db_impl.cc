@@ -3396,10 +3396,15 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
   return db_iter;
 }
 
+// NOTE: 这里会判断是否创建合并任务，如果不能就创建一个普通迭代器。
 Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
-  WaitForBGCompact();
+  bool do_sbc = false;
+  if(initial_db_options_.enable_sbc) {
+    WaitForBGCompact();
+    do_sbc = DoSBC();
+  }
   Status status;
   if (options.managed) {
     scan_based_compaction_scheduled_--;
@@ -3450,7 +3455,6 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
   InternalIterator* internal_iter;
   CompactionJob *compaction_job;
   Compaction* compaction;
-  JobContext *job_context = new JobContext(next_job_id_.fetch_add(1), true);
   {
     auto arena =  db_iter->GetArena();
     auto sequence = snapshot;
@@ -3496,79 +3500,94 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                             &merge_iter_builder,
                                             true, (begin == nullptr && end == nullptr));
       }
-      // TODO:  创建一个合并任务，放进迭代器
+
+      // 判断这个scan是否要转换成compaction
       {
         InstrumentedMutexLock l(&mutex_);
-        const CompactRangeOptions compact_range_options;
-        bool exclusive = true;
-        int final_output_level = cfd->NumberLevels() - 1;
-        // if bottom most level is reserved
-        if (immutable_db_options_.allow_ingest_behind) {
-          final_output_level--;
-        }
-        
-        ManualCompactionState *manual = new ManualCompactionState(
-          cfd, ColumnFamilyData::kCompactAllLevels, final_output_level, 
-          compact_range_options.target_path_id,
-          exclusive, false, compact_range_options.canceled);
+        ManualCompactionState *manual = nullptr;
         InternalKey *begin_storage = nullptr;
         InternalKey *end_storage = nullptr;
-        if(begin == nullptr && end == nullptr) {
 
-        } else {
-          begin_storage = new InternalKey();
-          end_storage = new InternalKey();
-          begin_storage->SetMinPossibleForUserKey(Slice(*begin));
-          manual->begin = begin_storage;
-          end_storage->SetMaxPossibleForUserKey(Slice(*end));
-          manual->end = end_storage;
+        // NOTE: 合并模型，判断是否要做SBC
+        if (do_sbc) {
+          const CompactRangeOptions compact_range_options;
+          bool manual_conflict;
+          auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
+          int final_output_level = cfd->NumberLevels() - 1;  // TODO: 输出层应该灵活设置
+          bool exclusive = true;
+
+          // if bottom most level is reserved
+          if (immutable_db_options_.allow_ingest_behind) {
+            final_output_level--;
+          }
+          manual = new ManualCompactionState(
+            cfd, ColumnFamilyData::kCompactAllLevels, final_output_level, 
+            compact_range_options.target_path_id,
+            exclusive, false, compact_range_options.canceled);
+
+          if(begin == nullptr && end == nullptr) {
+
+          } else {
+            begin_storage = new InternalKey();
+            end_storage = new InternalKey();
+            begin_storage->SetMinPossibleForUserKey(Slice(*begin));
+            manual->begin = begin_storage;
+            end_storage->SetMaxPossibleForUserKey(Slice(*end));
+            manual->end = end_storage;
+          }
+
+          compaction = manual->cfd->SBCCompactRange(
+                *manual->cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+                manual->input_level, manual->output_level, compact_range_options,
+                manual->begin, manual->end, &manual->manual_end, &manual_conflict,
+                max_file_num_to_ignore, "");
+          if(compaction == nullptr) {
+            do_sbc = false;
+            scan_based_compaction_scheduled_--;
+            delete manual;
+          }
         }
 
-        // NOTE: 这里保证compaction能创建成功
-        bool manual_conflict;
-        auto max_file_num_to_ignore = std::numeric_limits<uint64_t>::max();
-        compaction = manual->cfd->SBCCompactRange(
-               *manual->cfd->GetLatestMutableCFOptions(), mutable_db_options_,
-               manual->input_level, manual->output_level, compact_range_options,
-               manual->begin, manual->end, &manual->manual_end, &manual_conflict,
-               max_file_num_to_ignore, ""); 
-        assert(compaction != nullptr);
-        AddSBC(manual);
-        // 创建compaction job
-        CompactionJobStats *compaction_job_stats = new CompactionJobStats();
-        LogBuffer *log_buffer = new LogBuffer(InfoLogLevel::INFO_LEVEL,
-                       immutable_db_options_.info_log.get());
+        // NOTE:  创建一个合并任务，放进迭代器
+        if (do_sbc) {
+          assert(compaction);
+          AddSBC(manual);
+          // 创建compaction job
+          CompactionJobStats *compaction_job_stats = new CompactionJobStats();
+          LogBuffer *log_buffer = new LogBuffer(InfoLogLevel::INFO_LEVEL,
+                        immutable_db_options_.info_log.get());
 
-        std::vector<SequenceNumber> snapshot_seqs;
-        SequenceNumber earliest_write_conflict_snapshot;
-        SnapshotChecker* snapshot_checker;
-        GetSnapshotContext(job_context, &snapshot_seqs,
-                          &earliest_write_conflict_snapshot, &snapshot_checker);
+          std::vector<SequenceNumber> snapshot_seqs;
+          SequenceNumber earliest_write_conflict_snapshot;
+          SnapshotChecker* snapshot_checker;
+          JobContext *job_context = new JobContext(next_job_id_.fetch_add(1), true);
+          GetSnapshotContext(job_context, &snapshot_seqs,
+                            &earliest_write_conflict_snapshot, &snapshot_checker);
 
-        auto file_option_for_sbc_ = file_options_for_compaction_;
-        file_option_for_sbc_.writable_file_max_buffer_size = 3ll << 20;
-        compaction_job = new CompactionJob(
-          job_context->job_id, compaction, immutable_db_options_, mutable_db_options_,
-          file_options_for_compaction_, versions_.get(), &shutting_down_,
-          log_buffer, directories_.GetDbDir(),
-          GetDataDir(compaction->column_family_data(), compaction->output_path_id()),
-          GetDataDir(compaction->column_family_data(), 0), stats_, &mutex_, &error_handler_,
-          snapshot_seqs, earliest_write_conflict_snapshot, snapshot_checker,
-          job_context, table_cache_, &event_logger_,
-          compaction->mutable_cf_options()->paranoid_file_checks,
-          compaction->mutable_cf_options()->report_bg_io_stats, dbname_,
-          compaction_job_stats, Env::Priority::USER, io_tracer_,
-          kManualCompactionCanceledFalse_, db_id_, db_session_id_,
-          compaction->column_family_data()->GetFullHistoryTsLow(), compaction->trim_ts(),
-          &blob_callback_, &bg_compaction_scheduled_,
-          &bg_bottom_compaction_scheduled_);
+          auto file_option_for_sbc_ = file_options_for_compaction_;
+          file_option_for_sbc_.writable_file_max_buffer_size = 3ll << 20;
+          compaction_job = new CompactionJob(
+            job_context->job_id, compaction, immutable_db_options_, mutable_db_options_,
+            file_options_for_compaction_, versions_.get(), &shutting_down_,
+            log_buffer, directories_.GetDbDir(),
+            GetDataDir(compaction->column_family_data(), compaction->output_path_id()),
+            GetDataDir(compaction->column_family_data(), 0), stats_, &mutex_, &error_handler_,
+            snapshot_seqs, earliest_write_conflict_snapshot, snapshot_checker,
+            job_context, table_cache_, &event_logger_,
+            compaction->mutable_cf_options()->paranoid_file_checks,
+            compaction->mutable_cf_options()->report_bg_io_stats, dbname_,
+            compaction_job_stats, Env::Priority::USER, io_tracer_,
+            kManualCompactionCanceledFalse_, db_id_, db_session_id_,
+            compaction->column_family_data()->GetFullHistoryTsLow(), compaction->trim_ts(),
+            &blob_callback_, &bg_compaction_scheduled_,
+            &bg_bottom_compaction_scheduled_);
 
-          compaction_job->SetKeyRange(begin_storage, end_storage);
-          // 准备sub compaction
-          compaction_job->Prepare();
-          merge_iter_builder.SetSBCJob(compaction_job);
+            compaction_job->SetKeyRange(begin_storage, end_storage);
+            // 准备sub compaction
+            compaction_job->Prepare();
+            merge_iter_builder.SetSBCJob(compaction_job);
+        }
       }
-
       internal_iter = merge_iter_builder.Finish(
           options.ignore_range_deletions ? nullptr : db_iter);
       SuperVersionHandle* cleanup = new SuperVersionHandle(
@@ -3576,24 +3595,32 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
           options.background_purge_on_iterator_cleanup ||
               immutable_db_options_.avoid_unnecessary_blocking_io);
       internal_iter->RegisterCleanup(CleanupSuperVersionHandle, cleanup, nullptr);
-      compaction_job->CreateSBCIterator(internal_iter);
+      if(do_sbc) {
+        assert(compaction_job);
+        compaction_job->CreateSBCIterator(internal_iter);
+      }
     } else {
       CleanupSuperVersion(sv);
     }
   }
   current->Unref();
 
-  if(status.ok()){
+  if(status.ok()) {
     db_iter->SetIterUnderDBIter(internal_iter);
     auto stream = event_logger_.Log();
-    stream << "event" << "sbc_started";
-    for (size_t i = 0; i < compaction->num_input_levels(); ++i) {
-      stream << ("files_L" + std::to_string(compaction->level(i)));
-      stream.StartArray();
-      for (auto f : *compaction->inputs(i)) {
-        stream << f->fd.GetNumber();
+    if(do_sbc) {
+      assert(compaction);
+      assert(compaction_job);
+      stream << "event" << "sbc_started";
+      for (size_t i = 0; i < compaction->num_input_levels(); ++i) {
+        stream << ("files_L" + std::to_string(compaction->level(i)));
+        stream.StartArray();
+        for (auto f : *compaction->inputs(i)) {
+          stream << f->fd.GetNumber();
+        }
+        stream.EndArray();
       }
-      stream.EndArray();
+    } else {
     }
   }
   
@@ -3605,6 +3632,13 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
   Status s;
   bool sfm_reserved_compact_space = false;
   auto compaction_job = sbc_iter->GetSBCJob();
+
+  // NOTE: 普通迭代器，直接释放即可
+  if (compaction_job == nullptr) {
+    delete sbc_iter;
+    return Status::OK();
+  }
+
   auto c = compaction_job->GetCompaction();
   auto job_context = compaction_job->GetJobCtx();
   assert(compaction_job);

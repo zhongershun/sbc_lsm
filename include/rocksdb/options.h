@@ -1401,6 +1401,8 @@ struct DBOptions {
   // of the contract leads to undefined behaviors with high possibility of data
   // inconsistency, e.g. deleted old data become visible again, etc.
   bool enforce_single_del_contracts = true;
+
+  bool enable_sbc = false;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

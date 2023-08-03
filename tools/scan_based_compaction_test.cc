@@ -50,7 +50,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 6, ""); 
+DEFINE_int32(workloads, 7, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -981,7 +981,6 @@ void TestSBCFull() {
 
     auto start_ = std::chrono::system_clock::now();
     auto sbc_read_opt = ReadOptions();
-    assert(db_->DoSBC());
     auto iter = db_->NewSBCIterator(sbc_read_opt, &key_start, &key_end);
     assert(iter->status().ok());
     assert(db_->IsCompacting());
@@ -1013,8 +1012,10 @@ void TestSBCFull() {
   s = db->Get(ReadOptions(), "key000172896", &value);
   delete db;
 
+
   // ------------------------- SBC ------------------------------
   SBC(db, DBPath, options, "key000162896", "key000177440");
+
 
   // ------------------------- PointGet  --------------------------
   s = DB::Open(options, DBPath, &db);
@@ -1054,6 +1055,165 @@ void TestSBCFull() {
 }
 
 
+void TestSBCUniformIterator() {
+  std::string DBPath = "rocksdb_bench_SBC_1GB_MetaCut_" + std::to_string(FLAGS_value_size);
+  uint64_t data_size = 1ll << 30;
+  size_t value_size = FLAGS_value_size;
+  size_t key_num = data_size / (value_size+12ll);
+  FLAGS_read_count = 1;
+  if(FLAGS_disk_type == 0){
+    DBPath = "/zyn/SSD/test_RocksDB/" + DBPath;
+  }
+  system(("rm -rf " + DBPath).c_str());
+  system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
+
+  std::cout << "DB path:" << DBPath
+    << "\n Data size: " << BytesToHumanString(data_size)
+    << " MB\n ValueSize: " << FLAGS_value_size
+    << "\n KeyNum: " << key_num
+    << "\n BindCore: " << FLAGS_bind_core 
+    << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
+    << "\n Distribution: " << FLAGS_distribution
+    << "\n Core num: " << FLAGS_core_num
+    << "\n";
+  std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
+                     std::hash<unsigned char>> hist_;
+  auto hist_insert = std::make_shared<HistogramImpl>();  
+  hist_.insert({kInsert, std::move(hist_insert)});
+
+  
+  // 判断数据库能不能打开，不能打开就要重新插数据
+  DB *db_tmp = nullptr;
+  Options opt_tmp;
+  Status s_tmp = DB::Open(opt_tmp, DBPath, &db_tmp);
+  delete db_tmp;
+
+  // 如果数据库打不开或者强制重建数据库，才会重新插数据
+  if(FLAGS_create_new_db || s_tmp.ok()){
+    Options options_ins;
+    options_ins.create_if_missing = true;  
+    InsertData(options_ins, DBPath, key_num, hist_);
+  }
+
+  DB* db = nullptr;
+  Options options;
+  options.use_direct_reads = true;
+  options.disable_auto_compactions = true;
+
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  // 绑定CPU核心
+  for (int i = 0; i < FLAGS_core_num; i++) {
+    CPU_SET(i, &cpuset);
+  }
+  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
+  auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, int idx, std::string key_start, std::string key_end, std::vector<std::string> *key_all = nullptr) {
+    options_.enable_sbc = false;
+    auto s = DB::Open(options_, DBPath_, &db_);
+    assert(s.ok());
+    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
+    auto sbc_read_opt = ReadOptions();
+    auto iter = db_->NewSBCIterator(sbc_read_opt, &key_start, &key_end);
+    auto start_ = std::chrono::system_clock::now();
+    uint64_t key_cnt = 0;
+    iter->SeekToFirst();
+    while(iter->Valid()) {
+      if(key_all) {
+        auto k = iter->key().ToString();
+        key_all->emplace_back(k);
+      }
+      iter->Next();
+      key_cnt++;
+    }
+    auto end_ = std::chrono::system_clock::now();
+    db_->FinishSBC(iter);
+    assert(!db_->IsCompacting());
+    delete db_;
+    std::cout << "Scan" << idx << " duration: " 
+      << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n";
+  };
+
+  auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end) {
+    options_.enable_sbc = true;
+    auto s = DB::Open(options_, DBPath_, &db_);
+    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
+
+    auto start_ = std::chrono::system_clock::now();
+    auto sbc_read_opt = ReadOptions();
+    auto iter = db_->NewSBCIterator(sbc_read_opt, &key_start, &key_end);
+    assert(iter->status().ok());
+    assert(db_->IsCompacting());
+    auto key_cnt = 0;
+    iter->Seek(key_start);
+    for(;iter->Valid() && options_.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
+      key_cnt++;
+    }
+    auto end_ = std::chrono::system_clock::now();
+    db_->FinishSBC(iter);
+    assert(!db_->IsCompacting());
+    
+    std::cout << "SBC finished table num: " << FilesPerLevel(db_, 0) 
+      << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n";
+    delete db_;
+  };
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  std::vector<std::string> key_all;
+  ScanDB(db, DBPath, options, 1, "key", "key9", &key_all);
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  // ScanDB(db, DBPath, options, 2);
+
+  // ------------------------- PointGet  --------------------------
+  auto s = DB::Open(options, DBPath, &db);
+  std::string value;
+  s = db->Get(ReadOptions(), "key000172896", &value);
+  delete db;
+
+  // ------------------------- SBC ------------------------------
+  SBC(db, DBPath, options, "key000162896", "key000177440");
+
+  // ------------------------- PointGet  --------------------------
+  s = DB::Open(options, DBPath, &db);
+  std::string value2;
+  s = db->Get(ReadOptions(), "key000172896", &value2);
+  assert(value2 == value);
+  delete db;
+
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  std::vector<std::string> key_all2;
+  ScanDB(db, DBPath, options, 3, "key", "key9", &key_all2);
+
+  std::vector<std::string> result;
+  std::set_difference(key_all.begin(), key_all.end(),
+                      key_all2.begin(), key_all2.end(),
+                      std::back_inserter(result));
+
+  std::ofstream outfile("lost.txt");
+  for (std::string x : result) {
+      outfile << x << '\n';
+  }
+  outfile.close();
+
+  std::ofstream outfile_all("all.txt");
+  for (std::string x : key_all) {
+      outfile_all << x << '\n';
+  }
+  outfile_all.close();
+
+  // ------------------------- SBC ------------------------------
+  SBC(db, DBPath, options, "key", "key9");
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  ScanDB(db, DBPath, options, 4, "key", "key9");
+
+}
+
+
 }  // namespace ROCKSDB_NAMESPACE
 
 
@@ -1074,6 +1234,8 @@ int main(int argc, char** argv) {
     rocksdb::TestSBCScanTable();
   } else if(FLAGS_workloads == 6) {
     rocksdb::TestSBCFull();
+  } else if(FLAGS_workloads == 7) {
+    rocksdb::TestSBCUniformIterator();
   } else {
     std::cout << "Error workload: " << FLAGS_workloads <<" workload\n";
   }
