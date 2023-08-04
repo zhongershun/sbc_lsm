@@ -43,7 +43,7 @@
 
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
-DEFINE_bool(bind_core, true, "");
+DEFINE_bool(bind_core, false, "");
 DEFINE_uint64(data_size, 1024ll<<20, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
@@ -51,7 +51,7 @@ DEFINE_int32(scan_rate, 1, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
-DEFINE_int32(client_num_write, 9, "");
+DEFINE_int32(client_num_write, 4, "");
 DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int64(op_count, 10000, "");
 DEFINE_int32(workloads, 2, ""); 
@@ -64,11 +64,11 @@ DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 10, "Unit: second");
+DEFINE_int32(run_time, 400, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
-DEFINE_int32(level_multiplier, 10, "");
+DEFINE_int32(level_multiplier, 2, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
-DEFINE_uint64(key_range, 0, "");
+DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(l0_stalling_limit, 20, "");
 
 
@@ -789,31 +789,6 @@ void TestMixWorkloadWithDiffThread() {
   auto s = DB::Open(options, DBPath, &db);
   std::cout << "Init table num: " << FilesPerLevel(db, 0) << "\n";
 
-  // TODO: 目前只判断扫表的情况
-  auto IfDoSBC = [](DB *db_, std::string *begin, std::string *end, bool enable_sbc){
-    auto NumTableFilesAtLevel = [&](int level) {
-      std::string property;
-      db_->GetProperty(
-          "rocksdb.num-files-at-level" + NumberToString(level), &property);
-      return atoi(property.c_str());
-    };
-
-    if(!enable_sbc) {
-      return false;
-    }
-    std::cout << "SBC charge: " << FilesPerLevel(db_, 0) << "\n";
-    if (begin == nullptr && end == nullptr) {
-      if (NumTableFilesAtLevel(0) > 2) {
-        return db_->DoSBC();
-      }
-      return false;
-    }
-    if(NumTableFilesAtLevel(1)+NumTableFilesAtLevel(2) + NumTableFilesAtLevel(3) + NumTableFilesAtLevel(4) + NumTableFilesAtLevel(5) > NumTableFilesAtLevel(6)) {
-      return db_->DoSBC();
-    }
-    return false;
-  };
-
   auto ReadWrite = [&](size_t min, size_t max, int idx, OperationType op){
     if(FLAGS_bind_core) {
       // 绑定核心
@@ -960,22 +935,15 @@ void TestMixWorkloadWithDiffThread() {
         // if(start == nullptr && end == nullptr){
         //   scan_len = INT_MAX;
         // }
+        std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
 
         auto start_ = std::chrono::system_clock::now();
-        if(IfDoSBC(db, &start, &end, FLAGS_enable_sbc)){
-          std::cout << "SBC start: " << FilesPerLevel(db, 0) << "\n";
-          auto iter = db->NewSBCIterator(ReadOptions(), &start, &end);
-          for(iter->Seek(start);iter->Valid();iter->SBCNext()) {}
-          db->FinishSBC(iter);
-          std::cout << "SBC done: " << FilesPerLevel(db, 0) << "\n";
-        } else {
-          auto iter = db->NewIterator(ReadOptions());
-          iter->Seek(start);
-          for (int i = 0; iter->Valid(); i++) {
-            iter->Next();
-          }
-        }
+        auto iter = db->NewSBCIterator(ReadOptions(), &start, &end);
+        for(iter->Seek(start);iter->Valid();iter->SBCNext()) {}
         auto end_ = std::chrono::system_clock::now();
+
+        db->FinishSBC(iter);
+        std::cout << "Scan done: " << FilesPerLevel(db, 0) << "\n";
 
         hist_[kScan]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
         scan_count++;

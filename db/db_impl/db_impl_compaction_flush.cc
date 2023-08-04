@@ -3656,9 +3656,6 @@ bool DBImpl::HaveManualCompaction(ColumnFamilyData* cfd) {
 }
 
 bool DBImpl::HasExclusiveManualCompaction() {
-  if (scan_based_compaction_scheduled_ > 0) {
-    return true;
-  }
 
   // Remove from priority queue
   std::deque<ManualCompactionState*>::iterator it =

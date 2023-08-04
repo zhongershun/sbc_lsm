@@ -1469,7 +1469,7 @@ InternalIterator* MergeIteratorBuilder::Finish(ArenaWrappedDBIter* db_iter) {
 
 void MergingIterator::SBCNext() {
   assert(Valid());
-  if(current_->FromCompSST()) {
+  if(compaction_job_ && current_->FromCompSST()) {
     compaction_job_->AddKeyValue();
   }
   // Ensure that all children are positioned after key().

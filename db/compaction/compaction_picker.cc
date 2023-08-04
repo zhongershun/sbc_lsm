@@ -890,11 +890,11 @@ Compaction* CompactionPicker::CompactRange(
   return compaction;
 }
 
-// TODO: 
+// TODO: 如果合并模型觉得这里不适合做合并，那么就返回nullptr
 Compaction* CompactionPicker::SBCCompactRange(
     const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
     const MutableDBOptions& mutable_db_options, VersionStorageInfo* vstorage,
-    int input_level, int output_level,
+    int input_level, int &output_level,
     const CompactRangeOptions& compact_range_options, const InternalKey* begin,
     const InternalKey* end, InternalKey** compaction_end, bool* manual_conflict,
     uint64_t max_file_num_to_ignore, const std::string& trim_ts) {
@@ -1012,7 +1012,7 @@ Compaction* CompactionPicker::SBCCompactRange(
     assert(end != nullptr);
     *compaction_end = nullptr;
 
-    int start_level = 1;
+    int start_level = 2; // FIXME: 这里暂时只考虑L2以上的合并
     for (; start_level < vstorage->num_levels() &&
            vstorage->NumLevelFiles(start_level) == 0;
          start_level++) {
@@ -1024,17 +1024,24 @@ Compaction* CompactionPicker::SBCCompactRange(
     
     // NOTE: 如果一层只有一个文件，那么这层就不能执行SBC
     std::vector<CompactionInputFiles> inputs;
-    for (int level = vstorage->num_levels() - 1;level >= start_level; level--) {
+    uint64_t level_size[10] = {0};
+    uint64_t level_size_sum[10] = {0};
+    for (int level = output_level; level >= start_level; level--) {
       CompactionInputFiles input;
       input.level = level;
       vstorage->GetOverlappingInputs(level, begin, end, &input.files);
       if(input.files.size() == 1 && input.level != vstorage->num_levels() - 1) {
-        start_level = level;
         break;
       } else if(input.files.size() > 0) {
         inputs.emplace(inputs.begin(), input);
+        uint64_t level_sum = 0;
+        for (auto &&f : input.files) {
+          level_sum += f->compensated_file_size;
+        }
+        level_size[input.level] = level_sum;
       }
     }
+    start_level = inputs.front().level;
 
     if ((start_level == 0) && (!level0_compactions_in_progress_.empty())) {
       *manual_conflict = true;
@@ -1042,7 +1049,32 @@ Compaction* CompactionPicker::SBCCompactRange(
       return nullptr;
     }
 
-    // TODO: 这里要把切割的文件摘出来 
+    // TODO: 判断是否应该做合并
+    // 这里的判断依据是如果前几层的文件大小的和大于输出层的大小，那么就可以做合并
+    // 如果当前输出层较大，那么就选择上一层作为输出层
+    for (int i = 0; i < output_level; i++) {
+      level_size_sum[i] = level_size_sum[i-1] + level_size[i];
+    }
+
+    int j=output_level - 1;
+    while (level_size_sum[j] < level_size[output_level] && j >= start_level) {
+      if(inputs.back().level == output_level) {
+        inputs.pop_back();
+      }
+      output_level--;
+      j--;
+    }
+    if(output_level <= start_level || inputs.size() < 2) {
+      EventLogger log(ioptions_.logger);
+      auto stream = log.Log();
+      stream << "event" << "Create SBC failed"
+        << "start_level" << start_level
+        << "output_level" << output_level
+        << "inputs size" << inputs.size();
+      return nullptr;
+    }
+
+    // NOTE: 这里要把切割的文件摘出来 
     std::vector<std::pair<int, FileMetaData>> files_need_cut;
 
     for (auto &&level : inputs) {
@@ -1053,11 +1085,11 @@ Compaction* CompactionPicker::SBCCompactRange(
       files_need_cut.emplace_back(level.level, *level.files.front());
       files_need_cut.emplace_back(level.level, *level.files.back());
     }
-    
 
     EventLogger log(ioptions_.logger);
     auto stream = log.Log();
-    stream << "event" << "SBCPicker input files";
+    stream << "event" << "SBCPicker input files"
+      << "output_level" << output_level;
     for (auto &&level : inputs) {
       stream << ("files_L" + std::to_string(level.level));
       stream.StartArray();

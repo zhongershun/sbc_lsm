@@ -3401,6 +3401,8 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
   bool do_sbc = false;
+  auto stream = event_logger_.Log();
+  stream << "event" << "NewSBCIterator start";
   if(initial_db_options_.enable_sbc) {
     WaitForBGCompact();
     do_sbc = DoSBC();
@@ -3607,7 +3609,6 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
 
   if(status.ok()) {
     db_iter->SetIterUnderDBIter(internal_iter);
-    auto stream = event_logger_.Log();
     if(do_sbc) {
       assert(compaction);
       assert(compaction_job);
@@ -3621,6 +3622,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
         stream.EndArray();
       }
     } else {
+      stream << "event" << "CreateBasicScan";
     }
   }
   

@@ -429,7 +429,7 @@ class ColumnFamilyData {
   Compaction* SBCCompactRange(
     const MutableCFOptions& mutable_cf_options,
     const MutableDBOptions& mutable_db_options, int input_level,
-    int output_level, const CompactRangeOptions& compact_range_options,
+    int &output_level, const CompactRangeOptions& compact_range_options,
     const InternalKey* begin, const InternalKey* end,
     InternalKey** compaction_end, bool* conflict,
     uint64_t max_file_num_to_ignore, const std::string& trim_ts);
