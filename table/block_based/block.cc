@@ -272,7 +272,9 @@ void DataBlockIter::PrevImpl() {
   prev_entries_idx_ = static_cast<int32_t>(prev_entries_.size()) - 1;
 }
 
- uint64_t DataBlockIter::GetEndKeyOffset(const Slice& target) {
+// FIXME: 这里必须返回最后一个key
+// end_key为当前Block最后一个有效的key，end_key_off为end_key下一个起始位置
+uint64_t DataBlockIter::GetEndKeyOffset(const Slice& target) {
   PERF_TIMER_GUARD(block_seek_nanos);
   if (data_ == nullptr) {  // Not init yet
     return UINT64_MAX;
@@ -338,6 +340,11 @@ void DataBlockIter::PrevImpl() {
   }
 
   {
+    // SeekToRestartPoint() only does the lookup in the restart block. We need
+    // to follow it up with NextImpl() to position the iterator at the restart
+    // key.
+    // NOTE: upper_bound >= end_key(end_key为最后一个可见的key)，seek(upper_bound)
+    // 后的offset必然大于end_key的offset，从而满足end_key_off为end_key下一个起始位置
     SeekToRestartPoint(index);
     NextImpl();
     int t;

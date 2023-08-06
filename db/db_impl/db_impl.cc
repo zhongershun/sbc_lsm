@@ -207,6 +207,7 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
       bg_flush_scheduled_(0),
       num_running_flushes_(0),
       scan_based_compaction_scheduled_(0),
+      creating_sbc_(false),
       bg_purge_scheduled_(0),
       disable_delete_obsolete_files_(0),
       pending_purge_obsolete_files_(0),
@@ -3403,6 +3404,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
   bool do_sbc = false;
   auto stream = event_logger_.Log();
   stream << "event" << "NewSBCIterator start";
+  CreateSBCGuard g(this);
   if(initial_db_options_.enable_sbc) {
     WaitForBGCompact();
     do_sbc = DoSBC();
@@ -3646,6 +3648,7 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
   assert(compaction_job);
 
   status = compaction_job->FinishSBCJob();
+  delete sbc_iter;
   InstrumentedMutexLock l(&mutex_);
 
   if(status.ok()) {
@@ -3710,14 +3713,13 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
   delete compaction_job;
   delete c;
   
-  mutex_.Unlock();
-  delete sbc_iter;
-  mutex_.Lock();
   scan_based_compaction_scheduled_--;
 
   if (bg_compaction_scheduled_ == 0) {
     bg_cv_.SignalAll();
   }
+  auto stream = event_logger_.Log();
+  stream << "event" << "SCB Done";
   MaybeScheduleFlushOrCompaction();
 
   return status;

@@ -51,7 +51,7 @@ DEFINE_int32(scan_rate, 1, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
-DEFINE_int32(client_num_write, 4, "");
+DEFINE_int32(client_num_write, 1, "");
 DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int64(op_count, 10000, "");
 DEFINE_int32(workloads, 2, ""); 
@@ -64,7 +64,7 @@ DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 400, "Unit: second");
+DEFINE_int32(run_time, 240, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(level_multiplier, 2, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
@@ -799,14 +799,13 @@ void TestMixWorkloadWithDiffThread() {
     }
 
     unsigned long seed_;
-    Random rnd(301);
+    Random rnd(idx);
     std::default_random_engine gen;
     std::default_random_engine gen_key;
 
     std::uniform_int_distribution<size_t> key_gen_uniform(min, max);
     // UniformGenerator key_gen_uniform(min, max);
     // Random key_gen_uniform(idx);
-    UniformGenerator scan_len_uniform(10, 1000);
     // ZipfianGenerator key_gen_zipfian(min, max);  // FIXME: 这里的范围过大会导致启动这个函数极慢
 
     Env *env = Env::Default();
@@ -844,6 +843,12 @@ void TestMixWorkloadWithDiffThread() {
     size_t r_count = 0;
     size_t scan_count = 0;
     char buf[100];
+
+    auto size_t_to_string = [](size_t key) {
+        std::ostringstream oss;
+        oss << "key" << std::setw(9) << std::setfill('0') << key;
+        return oss.str();
+    };
     
     while(running) {
       size_t key;
@@ -929,21 +934,23 @@ void TestMixWorkloadWithDiffThread() {
         r_count++;
       } else if(op == kScan) {
         // Scan operation
-        std::string start = "";
-        std::string end = "key9"; 
-        // int scan_len = scan_len_uniform.Next();
-        // if(start == nullptr && end == nullptr){
-        //   scan_len = INT_MAX;
-        // }
+        int scan_end = key + rnd.Uniform((max-min)/4);
+        std::string start = size_t_to_string(key);
+        std::string end = size_t_to_string(scan_end); 
+        ReadOptions read_opt;
+        const Slice scan_end_key(end);
+        read_opt.iterate_upper_bound = &scan_end_key;
+
         std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
 
         auto start_ = std::chrono::system_clock::now();
-        auto iter = db->NewSBCIterator(ReadOptions(), &start, &end);
+        auto iter = db->NewSBCIterator(read_opt, &start, &end);
         for(iter->Seek(start);iter->Valid();iter->SBCNext()) {}
         auto end_ = std::chrono::system_clock::now();
 
         db->FinishSBC(iter);
-        std::cout << "Scan done: " << FilesPerLevel(db, 0) << "\n";
+        std::cout << "Scan done: " << FilesPerLevel(db, 0) 
+          << " Start: " << start << ", end: " << end << ", Length: " << scan_end - key << "\n";
 
         hist_[kScan]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
         scan_count++;

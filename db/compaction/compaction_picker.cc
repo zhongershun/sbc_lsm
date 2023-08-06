@@ -1041,6 +1041,15 @@ Compaction* CompactionPicker::SBCCompactRange(
         level_size[input.level] = level_sum;
       }
     }
+
+    if(inputs.size() < 2) {
+      EventLogger log(ioptions_.logger);
+      auto stream = log.Log();
+      stream << "event" << "Create SBC failed"
+        << "not enough input files";
+      return nullptr;
+    }
+
     start_level = inputs.front().level;
 
     if ((start_level == 0) && (!level0_compactions_in_progress_.empty())) {
@@ -1089,7 +1098,12 @@ Compaction* CompactionPicker::SBCCompactRange(
     EventLogger log(ioptions_.logger);
     auto stream = log.Log();
     stream << "event" << "SBCPicker input files"
-      << "output_level" << output_level;
+      << "start_level" << start_level
+      << "output_level" << output_level
+      << "number of inputs levels" << inputs.size()
+      << "output level size" << level_size[output_level]
+      << "upper level size" << level_size_sum[output_level-1];
+
     for (auto &&level : inputs) {
       stream << ("files_L" + std::to_string(level.level));
       stream.StartArray();

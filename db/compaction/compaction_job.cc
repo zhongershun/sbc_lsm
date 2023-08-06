@@ -2031,6 +2031,9 @@ Status CompactionJob::MetaCut() {
   Status s;
   bool delete_file = false;
   VersionEdit* const edit = compact_->compaction->edit();
+  std::string end_key_tmp = begin_storage_->user_key().ToString(); // FIXME: 没有实现找到最后一个Key，临时用做end key的，实际场景不能这样
+  end_key_tmp.back() -= 1;
+
   for (auto &&f : *compact_->compaction->GetFilesNeedCut()) {
     auto level = f.first;
     auto meta = f.second;
@@ -2073,9 +2076,9 @@ Status CompactionJob::MetaCut() {
       }
 
       if(cfd->internal_comparator().Compare(meta.smallest, *begin_storage_) < 0) {
-        table_reader->GetEndOffset(begin_storage_, &meta.largest, last_block_off, last_k_off_in_block);
+        table_reader->GetEndOffset(begin_storage_, &meta.largest, last_block_off, last_k_off_in_block); // FIXME: 这里必须把最后一个key找到，Meta中的Key范围必须是闭区间
         assert(last_k_off_in_block != UINT64_MAX);
-        meta.largest.Set(begin_storage_->user_key(), 0, kTypeValue);
+        meta.largest.Set(end_key_tmp, 0, kTypeValue);
       } else if(cfd->internal_comparator().Compare(*end_storage_, meta.largest) < 0) {
         meta.smallest.Set(end_storage_->user_key(), 0, kTypeValue);
       }
@@ -2117,10 +2120,11 @@ Status CompactionJob::MetaCut() {
       edit->AddFile(level, meta);
       ROCKS_LOG_INFO(db_options_.info_log,
                "[%s] [JOB %d] Metacut table #%" PRIu64 " -> #%" PRIu64
-               ", level %" PRIi32 ", temperature: %s",
+               ", level %" PRIi32 ", temperature: %s, [%s, %s]",
                cfd->GetName().c_str(), job_id_, old_number, 
                meta.fd.GetNumber(),level,
-               temperature_to_string[meta.temperature].c_str());
+               temperature_to_string[meta.temperature].c_str(),
+               meta.smallest.user_key().data(), meta.largest.user_key().data());
     } else if (s.ok()) {
        ROCKS_LOG_INFO(db_options_.info_log,
                "[%s] [JOB %d] Metacut delete old table #%" PRIu64
@@ -2130,7 +2134,7 @@ Status CompactionJob::MetaCut() {
                temperature_to_string[meta.temperature].c_str());
     } else {
       ROCKS_LOG_ERROR(db_options_.info_log,
-               "[%s] [JOB %d] Metacut table #%" PRIu64 " -> #%" PRIu64
+               "[%s] [JOB %d] Metacut table faild #%" PRIu64 " -> #%" PRIu64
                ", level %" PRIi32 ", temperature: %s",
                cfd->GetName().c_str(), job_id_, old_number, 
                meta.fd.GetNumber(),level,

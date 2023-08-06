@@ -2560,6 +2560,21 @@ class DBImpl : public DB {
 
   std::atomic<int> scan_based_compaction_scheduled_;
 
+  std::atomic<bool> creating_sbc_;
+
+  class CreateSBCGuard {
+  public:
+    CreateSBCGuard(DBImpl *db):db_(db) {
+      db_->creating_sbc_ = true;
+    }
+    ~CreateSBCGuard() {
+      db_->creating_sbc_ = false;
+    }
+  private:
+    DBImpl *db_;
+  };
+  friend CreateSBCGuard;
+
   // number of background obsolete file purge jobs, submitted to the HIGH pool
   int bg_purge_scheduled_;
 

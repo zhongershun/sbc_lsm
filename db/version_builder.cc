@@ -455,9 +455,9 @@ class VersionBuilder::Rep {
             std::ostringstream oss;
             oss << 'L' << level << " has overlapping ranges: file #"
                 << lhs->fd.GetNumber()
-                << " largest key: " << lhs->largest.DebugString(true)
+                << " largest key: " << lhs->largest.DebugString(false)
                 << " vs. file #" << rhs->fd.GetNumber()
-                << " smallest key: " << rhs->smallest.DebugString(true);
+                << " smallest key: " << rhs->smallest.DebugString(false);
 
             return Status::Corruption("VersionBuilder", oss.str());
           }
