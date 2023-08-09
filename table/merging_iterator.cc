@@ -139,7 +139,8 @@ class MergingIterator : public InternalIterator {
         current_(nullptr),
         minHeap_(comparator_),
         pinned_iters_mgr_(nullptr),
-        iterate_upper_bound_(iterate_upper_bound) {
+        iterate_upper_bound_(iterate_upper_bound),
+        compaction_job_(nullptr) {
     children_.resize(n);
     for (int i = 0; i < n; i++) {
       children_[i].level = i;
@@ -645,11 +646,11 @@ class MergingIterator : public InternalIterator {
   std::unique_ptr<MergerMaxIterHeap> maxHeap_;
   PinnedIteratorsManager* pinned_iters_mgr_;
 
-  CompactionJob* compaction_job_;
-
   // Used to bound range tombstones. For point keys, DBIter and SSTable iterator
   // take care of boundary checking.
   const Slice* iterate_upper_bound_;
+
+  CompactionJob* compaction_job_;
 
   // In forward direction, process a child that is not in the min heap.
   // If valid, add to the min heap. Otherwise, check status.
@@ -1469,9 +1470,10 @@ InternalIterator* MergeIteratorBuilder::Finish(ArenaWrappedDBIter* db_iter) {
 
 void MergingIterator::SBCNext() {
   assert(Valid());
-  if(compaction_job_ && current_->FromCompSST()) {
-    compaction_job_->AddKeyValue();
-  }
+  // 合并输出的范围是[start, end], 这里要保证start key被输出到文件。
+  // if(compaction_job_ && current_->FromCompSST()) {
+  //   compaction_job_->AddKeyValue();
+  // }
   // Ensure that all children are positioned after key().
   // If we are moving in the forward direction, it is already
   // true for all of the non-current children since current_ is

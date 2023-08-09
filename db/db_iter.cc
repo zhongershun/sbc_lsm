@@ -83,6 +83,7 @@ DBIter::DBIter(Env* _env, const ReadOptions& read_options,
       timestamp_lb_(read_options.iter_start_ts),
       timestamp_size_(timestamp_ub_ ? timestamp_ub_->size() : 0) {
   RecordTick(statistics_, NO_ITERATOR_CREATED);
+  start_key_added_ = false;
   if (pin_thru_lifetime_) {
     pinned_iters_mgr_.StartPinning();
   }
@@ -202,6 +203,10 @@ void DBIter::SBCNext() {
     // If the current key is a merge, very likely iter already points
     // to the next internal position.
     assert(iter_.Valid());
+    if(iter_.Valid() && iter_.GetSBCJob() && start_key_added_ == false) {
+      iter_.GetSBCJob()->AddKeyValue();
+      start_key_added_ = true;
+    }
     iter_.SBCNext();
     PERF_COUNTER_ADD(internal_key_skipped_count, 1);
   }
@@ -216,6 +221,15 @@ void DBIter::SBCNext() {
       FindNextUserEntry(true /* skipping the current user key */, &prefix);
     } else {
       FindNextUserEntry(true /* skipping the current user key */, nullptr);
+    }
+    if(valid_ && iter_.GetSBCJob() && start_key_added_ == true) {
+      // if(user_comparator_.CompareWithoutTimestamp(
+      //          iter_.key(), /*a_has_ts=*/false, *iterate_upper_bound_,
+      //          /*b_has_ts=*/false) > 0) {
+      //   std::cout << iter_.key().ToString() << ", " << iterate_upper_bound_->ToString() << "\n";
+      //   // abort();
+      // }
+      iter_.GetSBCJob()->AddKeyValue();
     }
   } else {
     is_key_seqnum_zero_ = false;

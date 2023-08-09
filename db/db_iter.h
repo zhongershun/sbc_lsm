@@ -406,6 +406,8 @@ class DBIter final : public Iterator {
 
   // Used only if timestamp_lb_ is not nullptr.
   std::string saved_ikey_;
+
+  bool start_key_added_;
 };
 
 // Return a new iterator that converts internal keys (yielded by
