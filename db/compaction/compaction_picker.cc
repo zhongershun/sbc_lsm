@@ -1046,7 +1046,7 @@ Compaction* CompactionPicker::SBCCompactRange(
       EventLogger log(ioptions_.logger);
       auto stream = log.Log();
       stream << "event" << "Create SBC failed"
-        << "not enough input files";
+        << "not enough input levels: " << inputs.size();
       return nullptr;
     }
 

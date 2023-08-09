@@ -2118,13 +2118,15 @@ Status CompactionJob::MetaCut() {
         }
       }
       edit->AddFile(level, meta);
+      std::string start_key = meta.smallest.user_key().ToString();
+      std::string end_key = meta.largest.user_key().ToString();
       ROCKS_LOG_INFO(db_options_.info_log,
                "[%s] [JOB %d] Metacut table #%" PRIu64 " -> #%" PRIu64
                ", level %" PRIi32 ", temperature: %s, [%s, %s]",
                cfd->GetName().c_str(), job_id_, old_number, 
                meta.fd.GetNumber(),level,
                temperature_to_string[meta.temperature].c_str(),
-               meta.smallest.user_key().data(), meta.largest.user_key().data());
+               start_key.c_str(), end_key.c_str());
     } else if (s.ok()) {
        ROCKS_LOG_INFO(db_options_.info_log,
                "[%s] [JOB %d] Metacut delete old table #%" PRIu64
