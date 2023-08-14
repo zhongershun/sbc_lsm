@@ -2029,6 +2029,9 @@ Status CompactionJob::FinishSBCJob() {
 Status CompactionJob::MetaCut() {
   assert(compact_);
   Status s;
+  if(begin_storage_ == nullptr && end_storage_ == nullptr) {
+    return Status::OK();
+  }
   bool delete_file = false;
   VersionEdit* const edit = compact_->compaction->edit();
   std::string end_key_tmp = begin_storage_->user_key().ToString(); // FIXME: 没有实现找到最后一个Key，临时用做end key的，实际场景不能这样

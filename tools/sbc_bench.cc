@@ -43,16 +43,17 @@
 
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
-DEFINE_bool(bind_core, false, "");
+DEFINE_bool(bind_core, true, "");
 DEFINE_uint64(data_size, 1024ll<<20, "");
 DEFINE_int32(write_rate, 99, "");
 DEFINE_int32(read_rate, 0, "");
 DEFINE_int32(scan_rate, 1, "");
-DEFINE_int32(core_num, 4, "");
+DEFINE_int32(core_num, 2, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
 DEFINE_int32(client_num_write, 1, "");
 DEFINE_int32(client_num_scan, 1, "");
+DEFINE_int32(client_num_scan_base, 0, "");
 DEFINE_int64(op_count, 10000, "");
 DEFINE_int32(workloads, 2, ""); 
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
@@ -64,12 +65,13 @@ DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 240, "Unit: second");
+DEFINE_int32(run_time, 200, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(level_multiplier, 2, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(l0_stalling_limit, 20, "");
+DEFINE_uint64(sbc_size, 1ll<<30, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -96,7 +98,8 @@ enum OperationType : unsigned char {
   kScan,
   kTailRead,
   kTailReadCPU,
-  kTailReadIO
+  kTailReadIO,
+  kScanBase
 };
 
 std::string NumberToString(uint64_t num) {
@@ -689,6 +692,7 @@ void TestMixWorkloadWithDiffThread() {
   size_t client_num_read = FLAGS_client_num_read;
   size_t client_num_write = FLAGS_client_num_write;
   size_t client_num_scan = FLAGS_client_num_scan;
+  size_t client_num_scan_base = FLAGS_client_num_scan_base;
   size_t key_num = data_size / (value_size+22ll);
   // size_t key_per_client = key_num / client_num; 
 
@@ -737,6 +741,7 @@ void TestMixWorkloadWithDiffThread() {
   auto hist_read = std::make_shared<HistogramImpl>();
   auto hist_insert = std::make_shared<HistogramImpl>();
   auto hist_scan = std::make_shared<HistogramImpl>();
+  auto hist_scan_based = std::make_shared<HistogramImpl>();
   auto hist_tail_read = std::make_shared<HistogramImpl>();
   auto hist_tail_read_cpu = std::make_shared<HistogramImpl>();
   auto hist_tail_read_io = std::make_shared<HistogramImpl>();
@@ -748,6 +753,7 @@ void TestMixWorkloadWithDiffThread() {
   hist_.insert({kTailRead, std::move(hist_tail_read)});
   hist_.insert({kTailReadCPU, std::move(hist_tail_read_cpu)});
   hist_.insert({kTailReadIO, std::move(hist_tail_read_io)});
+  hist_.insert({kScanBase, std::move(hist_scan_based)});
 
   if (access(DataRaw.c_str(), 0) == 0) {
     // 文件夹存在
@@ -842,6 +848,8 @@ void TestMixWorkloadWithDiffThread() {
     size_t w_count = 0;
     size_t r_count = 0;
     size_t scan_count = 0;
+    size_t scan_start = 0;
+    size_t scan_base_count = 0;
     char buf[100];
 
     auto size_t_to_string = [](size_t key) {
@@ -934,34 +942,96 @@ void TestMixWorkloadWithDiffThread() {
         r_count++;
       } else if(op == kScan) {
         // Scan operation
-        int scan_end = key + rnd.Uniform((max-min)/4);
-        std::string start = size_t_to_string(key);
-        std::string end = size_t_to_string(scan_end); 
+        // int scan_end = key + rnd.Uniform((max-min)/4);
+        size_t scan_window = max-min;
+        std::string property;
+        static_cast<DBImpl*>(db)->GetProperty("rocksdb.estimate-live-data-size", &property);
+        uint64_t db_size = std::atoll(property.c_str());
+
+        // 选择合适的scan数据量，一般不超过1GB
+        uint64_t scan_size = 1ll<<30;
+        uint64_t scan_len = scan_window*(scan_size*1.0/db_size);
+        scan_start = key;
+        std::string start = size_t_to_string(min + scan_start);
+        std::string end = size_t_to_string(min + scan_start + scan_len); 
+
+        scan_start += scan_len;
+        scan_start %= scan_window; // scan_start的范围始终在[0, scan_window)
+
+        // start = "key";
+        // end = "key9";
         ReadOptions read_opt;
         const Slice scan_end_key(end);
         read_opt.iterate_upper_bound = &scan_end_key;
 
-        std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
+        // std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
 
         auto start_ = std::chrono::system_clock::now();
         auto iter = db->NewSBCIterator(read_opt, &start, &end);
-        for(iter->Seek(start);iter->Valid();iter->SBCNext()) {}
+        bool do_scan = false;
+        if(FLAGS_client_num_scan_base == 0 || iter->GetSBCJob()!=nullptr) {
+          do_scan = true;
+          for(iter->Seek(start);iter->Valid();iter->SBCNext()) {
+            if(iter->key().ToString() > end) {
+              std::cout << iter->key().ToString() << " " << end << "\n";
+              abort();
+            }
+          }
+        }
         auto end_ = std::chrono::system_clock::now();
 
         db->FinishSBC(iter);
-        std::cout << "Scan done: " << FilesPerLevel(db, 0) 
-          << " Start: " << start << ", end: " << end << ", Length: " << scan_end - key << "\n";
+        if(do_scan) {
+          std::cout << "Scan done: " << FilesPerLevel(db, 0) 
+            << " Start: " << start << ", end: " << end << ", Length: " << scan_len << "\n";
+          hist_[kScan]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+          scan_count++;
+        } else {
+          sleep(1);
+        }
+      } else if(op == kScanBase) {
+        size_t scan_window = max-min;
+        std::string property;
+        static_cast<DBImpl*>(db)->GetProperty("rocksdb.estimate-live-data-size", &property);
+        uint64_t db_size = std::atoll(property.c_str());
 
-        hist_[kScan]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
-        scan_count++;
+        // 选择合适的scan数据量，一般不超过1GB
+        uint64_t scan_size = FLAGS_sbc_size;
+        uint64_t scan_len = scan_window*(scan_size*1.0/db_size);
+        scan_start = key;
+        std::string start = size_t_to_string(min + scan_start);
+        std::string end = size_t_to_string(min + scan_start + scan_len); 
+
+        scan_start += scan_len;
+        scan_start %= scan_window; // scan_start的范围始终在[0, scan_window)
+
+        ReadOptions read_opt;
+        const Slice scan_end_key(end);
+        read_opt.iterate_upper_bound = &scan_end_key;
+
+        auto start_ = std::chrono::system_clock::now();
+        auto iter = db->NewIterator(read_opt);
+        for(iter->Seek(start);iter->Valid();iter->SBCNext()) {
+          if(iter->key().ToString() >= end) {
+            std::cout << iter->key().ToString() << " " << end << "\n";
+            abort();
+          }
+        }
+        auto end_ = std::chrono::system_clock::now();
+        delete iter;
+        std::cout << "Scan based done: " << FilesPerLevel(db, 0) 
+          << " Start: " << start << ", end: " << end << ", Length: " << scan_len << "\n";
+
+        hist_[kScanBase]->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count());
+        scan_base_count++;
       } else {
         // Do nothing
       }
       op_count_list[idx]++;
       op_count_.fetch_add(1, std::memory_order_relaxed);
     }
-    std::cout<<"Thread: " << idx 
-      <<", Write:Read:Scan (" << w_count<<", "<<r_count<<", " << scan_count << ")\n";
+    std::cout<<"Thread: " << idx <<", Write:Read:Scan (" 
+      << w_count<<", "<<r_count<<", " << scan_count << ", " << scan_base_count << ")\n";
   };
   
   std::string core_name_list[10] = {
@@ -1005,6 +1075,9 @@ void TestMixWorkloadWithDiffThread() {
   for (size_t i = 0; i < client_num_scan; i++) {
     client_threads.emplace_back(std::thread(ReadWrite, 0, FLAGS_key_range, i, kScan));
   }
+  for (size_t i = 0; i < client_num_scan_base; i++) {
+    client_threads.emplace_back(std::thread(ReadWrite, 0, FLAGS_key_range, i, kScanBase));
+  }
   // Statistic CPU
   std::thread cpu_rec = std::thread(CPUStat::GetCPUStatMs, cpu_set);
 
@@ -1043,7 +1116,7 @@ void TestMixWorkloadWithDiffThread() {
     CPUStat::cal_cpuoccupy(&cpu_stat1[i], &cpu_stat2[i]);
   }
   
-  std::cout << "Throughput: [" << op_count_ << ", " << duration / 1000 << "s, " << op_count_*1.0 / (duration) << " Kop/s] \n";
+  std::cout << "Throughput: [" << op_count_ << ", " << duration / 1000 << "s, " << op_count_*1.0 / (FLAGS_run_time*1000) << " Kop/s] \n";
   std::cout << "Read: " << hist_[kRead]->ToString() << "\n";
   std::cout << "Write: " << hist_[kWrite]->ToString() << "\n";
   std::cout << "Scan: " << hist_[kScan]->ToString() << "\n";
