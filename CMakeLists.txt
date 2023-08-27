@@ -1635,6 +1635,10 @@ add_executable(block_based_table_reader_meta_test table/block_based_table_reader
 target_compile_definitions(block_based_table_reader_meta_test PRIVATE DISP_BLOCK_KEY)
 target_link_libraries(block_based_table_reader_meta_test ${ROCKSDB_LIB} -lpthread gtest testharness)
 
+add_executable(lock_free_queue_test util/lock_free_queue_test.cc)
+target_compile_definitions(lock_free_queue_test PRIVATE DISP_BLOCK_KEY)
+target_link_libraries(lock_free_queue_test ${ROCKSDB_LIB} -lpthread gtest testharness)
+
 
 # set_target_properties(block_based_table_reader_meta_test PROPERTIES COMPILE_DEFINITIONS DISP_BLOCK_KEY)
 
