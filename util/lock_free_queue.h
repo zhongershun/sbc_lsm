@@ -6,157 +6,100 @@
 #include <iostream>
 #include <list>
 #include <stdio.h>
+#include <atomic>
+#include "memory/arena.h"
+#include <cstddef>
 
 #include "rocksdb/status.h"
 #include "rocksdb/rocksdb_namespace.h"
 
 namespace ROCKSDB_NAMESPACE {
 
-#define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
-#if GCC_VERSION > 40704
-#define ATOMIC_LOAD(x) __atomic_load_n((x), __ATOMIC_SEQ_CST)
-#define ATOMIC_STORE(x, v) __atomic_store_n((x), (v), __ATOMIC_SEQ_CST)
-#else
-#define __COMPILER_BARRIER() asm volatile("" ::: "memory")
-#define ATOMIC_LOAD(x) ({__COMPILER_BARRIER(); *(x);})
-#define ATOMIC_STORE(x, v) ({__COMPILER_BARRIER(); *(x) = v; __sync_synchronize(); })
-#endif
-
-#define MEM_BARRIER() __sync_synchronize()
-#define PAUSE() asm("pause\n")
-#define ATOMIC_FAA(val, addv) __sync_fetch_and_add((val), (addv))
-#define ATOMIC_AAF(val, addv) __sync_add_and_fetch((val), (addv))
-#define ATOMIC_SET(val, newv) __sync_lock_test_and_set((val), (newv))
-#define ATOMIC_VCAS(val, cmpv, newv) __sync_val_compare_and_swap((val), (cmpv), (newv))
-#define ATOMIC_BCAS(val, cmpv, newv) __sync_bool_compare_and_swap((val), (cmpv), (newv))
-
-
-template <class T>
-class LockfreeQueue {
-  struct Node {
-    T *volatile v;
-  };
- public:
-  LockfreeQueue(size_t size):data_(nullptr), consumer_(0), producer_(0), size_(0) {
-    data_ = (Node*)malloc(size * sizeof(Node));
-    memset(data_, 0, size * sizeof(Node));
-    consumer_ = 0;
-    producer_ = 0;
-    size_ = size;
-  }
-  ~LockfreeQueue();
-  void destroy();
-  Status push(T *ptr);
-  T *pop();
-  int64_t get_free() const;
-  int64_t get_length() const;
-  int64_t get_capacity() const;
- private:
-  Node *data_;
-  volatile uint64_t consumer_;
-  volatile uint64_t producer_;
-  volatile int64_t size_;
-};
-
-template <class T>
-LockfreeQueue<T>::~LockfreeQueue() {
-  destroy();
-}
-
-template <class T>
-void LockfreeQueue<T>::destroy() {
-  if (nullptr != data_) {
-    free(data_);
-    data_ = nullptr;
-  }
-
-  size_ = 0;
-  producer_ = 0;
-  consumer_ = 0;
-}
-
-template <class T>
-Status LockfreeQueue<T>::push(T *ptr) {
-  Status ret = Status::OK();
-
-  if (nullptr == ptr) {
-    ret = Status::Corruption("Input nullptr");
-  } else {
-    volatile uint64_t oldv = producer_;
-    volatile uint64_t cmpv = oldv;
-    ret = Status::Corruption("Queue full");
-
-    while (oldv < (consumer_ + size_)) {
-      if (cmpv != (oldv = ATOMIC_VCAS(&producer_, cmpv, oldv + 1))) {
-        cmpv = oldv;
-      } else {
-        ret = Status::OK();
-        break;
-      }
-    }
-
-    if (Status::OK() == ret) {
-      int64_t index = oldv % size_;
-      T *old = NULL;
-
-      while (old != ATOMIC_VCAS(&(data_[index].v), old, ptr)) {
-        PAUSE();
-      }
-    }
-  }
-
-  return ret;
-}
-
-template <class T>
-T *LockfreeQueue<T>::pop() {
-  T *volatile ret = nullptr;
-
+template <typename T> 
+class LockFreeQueue
+{
+public:
+  explicit LockFreeQueue(size_t capacity)
   {
-    volatile uint64_t oldv = consumer_;
-    volatile uint64_t cmpv = oldv;
-    int64_t index = 0;
-    bool bret = false;
+    _capacityMask = capacity - 1;
+    for(size_t i = 1; i <= sizeof(void*) * 4; i <<= 1)
+      _capacityMask |= _capacityMask >> i;
+    _capacity = _capacityMask + 1;
 
-    while (oldv < producer_) {
-      index = oldv % size_;
-
-      if (nullptr == ATOMIC_LOAD(&(data_[index].v))) {
-        PAUSE();
-        oldv = ATOMIC_LOAD(&consumer_);
-        cmpv = oldv;
-      } else if (cmpv != (oldv = ATOMIC_VCAS(&consumer_, cmpv, oldv + 1))) {
-        cmpv = oldv;
-      } else {
-        bret = true;
-        break;
-      }
+    _queue = (Node*)new char[sizeof(Node) * _capacity];
+    for(size_t i = 0; i < _capacity; ++i)
+    {
+      _queue[i].tail.store(i, std::memory_order_relaxed);
+      _queue[i].head.store(-1, std::memory_order_relaxed);
     }
 
-    if (bret) {
-      while (nullptr == (ret = (T * volatile) ATOMIC_SET(&(data_[index].v), (T * volatile)nullptr))) {
-        PAUSE();
-      }
-    }
+    _tail.store(0, std::memory_order_relaxed);
+    _head.store(0, std::memory_order_relaxed);
   }
 
-  return ret;
-}
+  ~LockFreeQueue()
+  {
+    delete [] (char*)_queue;
+  }
+  
+  size_t capacity() const {return _capacity;}
+  
+  size_t get_length() const
+  {
+    size_t head = _head.load(std::memory_order_acquire);
+    return _tail.load(std::memory_order_relaxed) - head;
+  }
+  
+  bool push(T *data)
+  {
+    Node* node;
+    size_t tail = _tail.load(std::memory_order_relaxed);
+    for(;;)
+    {
+      node = &_queue[tail & _capacityMask];
+      if(node->tail.load(std::memory_order_relaxed) != tail)
+        return false;
+      if((_tail.compare_exchange_weak(tail, tail + 1, std::memory_order_relaxed)))
+        break;
+    }
+    node->data = data;
+    node->head.store(tail, std::memory_order_release);
+    return true;
+  }
 
-template <class T>
-int64_t LockfreeQueue<T>::get_free() const {
-  return get_capacity() - get_length();
-}
+  bool pop(T *&result)
+  {
+    Node* node;
+    size_t head = _head.load(std::memory_order_relaxed);
+    for(;;)
+    {
+      node = &_queue[head & _capacityMask];
+      if(node->head.load(std::memory_order_relaxed) != head)
+        return false;
+      if(_head.compare_exchange_weak(head, head + 1, std::memory_order_relaxed))
+        break;
+    }
+    result = node->data;
+    node->tail.store(head + _capacity, std::memory_order_release);
+    return true;
+  }
 
-template <class T>
-int64_t LockfreeQueue<T>::get_length() const {
-  return producer_ - consumer_;
-}
+private:
+  struct Node
+  {
+    T *data;
+    std::atomic<size_t> tail;
+    std::atomic<size_t> head;
+  };
 
-template <class T>
-int64_t LockfreeQueue<T>::get_capacity() const {
-  return size_;
-}
-
-
+private:
+  size_t _capacityMask;
+  Node* _queue;
+  size_t _capacity;
+  char cacheLinePad1[64];
+  std::atomic<size_t> _tail;
+  char cacheLinePad2[64];
+  std::atomic<size_t> _head;
+  char cacheLinePad3[64];
+};
 }

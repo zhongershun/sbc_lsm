@@ -10,6 +10,7 @@
 
 #include "db/compaction/subcompaction_state.h"
 
+#include "db/sbc_buffer.h"
 #include "rocksdb/sst_partitioner.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -101,6 +102,22 @@ Status SubcompactionState::AddToOutput(
   }
 
   return Current().AddToOutput(iter, open_file_func, close_file_func);
+}
+
+Status SubcompactionState::AddFromBuffer(
+    const KeyValueNode& kv_node,
+    const CompactionFileOpenFunc& open_file_func,
+    const CompactionFileCloseFunc& close_file_func,
+    bool output_to_penultimate_level) {
+  // update target output first
+  is_current_penultimate_level_ = output_to_penultimate_level;
+  current_outputs_ = is_current_penultimate_level_ ? &penultimate_level_outputs_
+                                                   : &compaction_outputs_;
+  if (is_current_penultimate_level_) {
+    has_penultimate_level_outputs_ = true;
+  }
+
+  return Current().AddFromBuffer(kv_node, open_file_func, close_file_func);
 }
 
 }  // namespace ROCKSDB_NAMESPACE

@@ -1403,6 +1403,8 @@ struct DBOptions {
   bool enforce_single_del_contracts = true;
 
   bool enable_sbc = false;
+
+  bool use_sbc_buffer = enable_sbc;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

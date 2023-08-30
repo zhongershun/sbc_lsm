@@ -19,6 +19,8 @@
 namespace ROCKSDB_NAMESPACE {
 
 class CompactionOutputs;
+class KeyValueNode;
+
 using CompactionFileOpenFunc = std::function<Status(CompactionOutputs&)>;
 using CompactionFileCloseFunc =
     std::function<Status(CompactionOutputs&, const Status&, const Slice&)>;
@@ -243,6 +245,12 @@ class CompactionOutputs {
   // Add current key from compaction_iterator to the output file. If needed
   // close and open new compaction output with the functions provided.
   Status AddToOutput(const CompactionIterator& c_iter,
+                     const CompactionFileOpenFunc& open_file_func,
+                     const CompactionFileCloseFunc& close_file_func);
+
+  bool ShouldStopBefore(const KeyValueNode& c_iter);
+
+  Status AddFromBuffer(const KeyValueNode& kv_node,
                      const CompactionFileOpenFunc& open_file_func,
                      const CompactionFileCloseFunc& close_file_func);
 

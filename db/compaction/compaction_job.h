@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "db/sbc_buffer.h"
 #include "db/blob/blob_file_completion_callback.h"
 #include "db/column_family.h"
 #include "db/compaction/compaction_iterator.h"
@@ -190,12 +191,15 @@ class CompactionJob {
 
   Status MetaCut();
 
+  // NOTE: 这个是让SBCBuffer里的工作线程负责调用的函数
+  Status AddKeyValueFromKVBuffer();
+
   void SetKeyRange(InternalKey *begin_storage, InternalKey *end_storage) {
     begin_storage_ = begin_storage;
     end_storage_ = end_storage;
   }
 
-  Status CreateSBCIterator(InternalIterator *input);
+  Status CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_buffer);
 
   Compaction* GetCompaction();
   JobContext* GetJobCtx();
@@ -250,6 +254,7 @@ class CompactionJob {
   };
 
   friend class CompactionJobTestBase;
+  friend class SBCBuffer;
 
   // Generates a histogram representing potential divisions of key ranges from
   // the input. It adds the starting and/or ending keys of certain input files
@@ -344,6 +349,12 @@ class CompactionJob {
 
   std::unique_ptr<rocksdb::CompactionIterator> SBC_iter_;
   std::vector<WriteFileData> files_need_flush_;
+  SBCBuffer *sbc_buffer_;
+  SBCKeyValueBuffer *sbc_key_value_buffer_;
+  InstrumentedMutex mu_kv_buf_;
+  InstrumentedCondVar cv_kv_buf_;
+  bool sbc_running_;
+  std::thread sbc_worker;
 
   bool paranoid_file_checks_;
   bool measure_io_stats_;

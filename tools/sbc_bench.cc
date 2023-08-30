@@ -951,7 +951,7 @@ void TestMixWorkloadWithDiffThread() {
         // 选择合适的scan数据量，一般不超过1GB
         uint64_t scan_size = 1ll<<30;
         uint64_t scan_len = scan_window*(scan_size*1.0/db_size);
-        scan_start = key;
+        // scan_start = key;
         std::string start = size_t_to_string(min + scan_start);
         std::string end = size_t_to_string(min + scan_start + scan_len); 
 
@@ -998,7 +998,7 @@ void TestMixWorkloadWithDiffThread() {
         // 选择合适的scan数据量，一般不超过1GB
         uint64_t scan_size = FLAGS_sbc_size;
         uint64_t scan_len = scan_window*(scan_size*1.0/db_size);
-        scan_start = key;
+        // scan_start = key;
         std::string start = size_t_to_string(min + scan_start);
         std::string end = size_t_to_string(min + scan_start + scan_len); 
 

@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "db/sbc_buffer.h"
 #include "db/column_family.h"
 #include "db/compaction/compaction_iterator.h"
 #include "db/compaction/compaction_job.h"
@@ -2718,6 +2719,8 @@ class DBImpl : public DB {
   // seqno_time_mapping_ stores the sequence number to time mapping, it's not
   // thread safe, both read and write need db mutex hold.
   SeqnoToTimeMapping seqno_time_mapping_;
+
+  SBCBuffer sbc_buffer_;
 };
 
 class GetWithTimestampReadCallback : public ReadCallback {

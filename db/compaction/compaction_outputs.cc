@@ -10,6 +10,7 @@
 
 #include "db/compaction/compaction_outputs.h"
 
+#include "db/sbc_buffer.h"
 #include "db/builder.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -380,6 +381,207 @@ Status CompactionOutputs::AddToOutput(
   if (partitioner_) {
     last_key_for_partitioner_.assign(c_iter.user_key().data_,
                                      c_iter.user_key().size_);
+  }
+
+  return s;
+}
+
+bool CompactionOutputs::ShouldStopBefore(const KeyValueNode& key_value_node) {
+
+  // always update grandparent information like overlapped file number, size
+  // etc.
+  const Slice internal_key(key_value_node.key, key_value_node.key_size);
+  const uint64_t previous_overlapped_bytes = grandparent_overlapped_bytes_;
+  size_t num_grandparent_boundaries_crossed =
+      UpdateGrandparentBoundaryInfo(internal_key);
+
+  if (!HasBuilder()) {
+    return false;
+  }
+
+  // If there's user defined partitioner, check that first
+  if (partitioner_ && partitioner_->ShouldPartition(PartitionerRequest(
+                          last_key_for_partitioner_, key_value_node.ikey.user_key,
+                          current_output_file_size_)) == kRequired) {
+    return true;
+  }
+
+  // files output to Level 0 won't be split
+  if (compaction_->output_level() == 0) {
+    return false;
+  }
+
+  // reach the max file size
+  if (current_output_file_size_ >= compaction_->max_output_file_size()) {
+    return true;
+  }
+
+  const InternalKeyComparator* icmp =
+      &compaction_->column_family_data()->internal_comparator();
+
+  // Check if it needs to split for RoundRobin
+  // Invalid local_output_split_key indicates that we do not need to split
+  if (local_output_split_key_ != nullptr && !is_split_) {
+    // Split occurs when the next key is larger than/equal to the cursor
+    if (icmp->Compare(internal_key, local_output_split_key_->Encode()) >= 0) {
+      is_split_ = true;
+      return true;
+    }
+  }
+
+  // only check if the current key is going to cross the grandparents file
+  // boundary (either the file beginning or ending).
+  if (num_grandparent_boundaries_crossed > 0) {
+    // Cut the file before the current key if the size of the current output
+    // file + its overlapped grandparent files is bigger than
+    // max_compaction_bytes. Which is to prevent future bigger than
+    // max_compaction_bytes compaction from the current output level.
+    if (grandparent_overlapped_bytes_ + current_output_file_size_ >
+        compaction_->max_compaction_bytes()) {
+      return true;
+    }
+
+    // Cut the file if including the key is going to add a skippable file on
+    // the grandparent level AND its size is reasonably big (1/8 of target file
+    // size). For example, if it's compacting the files L0 + L1:
+    //  L0:  [1,   21]
+    //  L1:    [3,   23]
+    //  L2: [2, 4] [11, 15] [22, 24]
+    // Without this break, it will output as:
+    //  L1: [1,3, 21,23]
+    // With this break, it will output as (assuming [11, 15] at L2 is bigger
+    // than 1/8 of target size):
+    //  L1: [1,3] [21,23]
+    // Then for the future compactions, [11,15] won't be included.
+    // For random datasets (either evenly distributed or skewed), it rarely
+    // triggers this condition, but if the user is adding 2 different datasets
+    // without any overlap, it may likely happen.
+    // More details, check PR #1963
+    const size_t num_skippable_boundaries_crossed =
+        being_grandparent_gap_ ? 2 : 3;
+    if (compaction_->immutable_options()->compaction_style ==
+            kCompactionStyleLevel &&
+        compaction_->immutable_options()->level_compaction_dynamic_file_size &&
+        num_grandparent_boundaries_crossed >=
+            num_skippable_boundaries_crossed &&
+        grandparent_overlapped_bytes_ - previous_overlapped_bytes >
+            compaction_->target_output_file_size() / 8) {
+      return true;
+    }
+
+    // Pre-cut the output file if it's reaching a certain size AND it's at the
+    // boundary of a grandparent file. It can reduce the future compaction size,
+    // the cost is having smaller files.
+    // The pre-cut size threshold is based on how many grandparent boundaries
+    // it has seen before. Basically, if it has seen no boundary at all, then it
+    // will pre-cut at 50% target file size. Every boundary it has seen
+    // increases the threshold by 5%, max at 90%, which it will always cut.
+    // The idea is based on if it has seen more boundaries before, it will more
+    // likely to see another boundary (file cutting opportunity) before the
+    // target file size. The test shows it can generate larger files than a
+    // static threshold like 75% and has a similar write amplification
+    // improvement.
+    if (compaction_->immutable_options()->compaction_style ==
+            kCompactionStyleLevel &&
+        compaction_->immutable_options()->level_compaction_dynamic_file_size &&
+        current_output_file_size_ >=
+            ((compaction_->target_output_file_size() + 99) / 100) *
+                (50 + std::min(grandparent_boundary_switched_num_ * 5,
+                               size_t{40}))) {
+      return true;
+    }
+  }
+
+  // check ttl file boundaries if there's any
+  if (!files_to_cut_for_ttl_.empty()) {
+    if (cur_files_to_cut_for_ttl_ != -1) {
+      // Previous key is inside the range of a file
+      if (icmp->Compare(internal_key,
+                        files_to_cut_for_ttl_[cur_files_to_cut_for_ttl_]
+                            ->largest.Encode()) > 0) {
+        next_files_to_cut_for_ttl_ = cur_files_to_cut_for_ttl_ + 1;
+        cur_files_to_cut_for_ttl_ = -1;
+        return true;
+      }
+    } else {
+      // Look for the key position
+      while (next_files_to_cut_for_ttl_ <
+             static_cast<int>(files_to_cut_for_ttl_.size())) {
+        if (icmp->Compare(internal_key,
+                          files_to_cut_for_ttl_[next_files_to_cut_for_ttl_]
+                              ->smallest.Encode()) >= 0) {
+          if (icmp->Compare(internal_key,
+                            files_to_cut_for_ttl_[next_files_to_cut_for_ttl_]
+                                ->largest.Encode()) <= 0) {
+            // With in the current file
+            cur_files_to_cut_for_ttl_ = next_files_to_cut_for_ttl_;
+            return true;
+          }
+          // Beyond the current file
+          next_files_to_cut_for_ttl_++;
+        } else {
+          // Still fall into the gap
+          break;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+Status CompactionOutputs::AddFromBuffer(
+    const KeyValueNode& kv_node,
+    const CompactionFileOpenFunc& open_file_func,
+    const CompactionFileCloseFunc& close_file_func) {
+  Status s;
+  const Slice key(kv_node.key, kv_node.key_size);
+
+  if (ShouldStopBefore(kv_node) && HasBuilder()) {
+    s = close_file_func(*this, kv_node.input_status, key);
+    if (!s.ok()) {
+      return s;
+    }
+    // reset grandparent information
+    grandparent_boundary_switched_num_ = 0;
+    grandparent_overlapped_bytes_ =
+        GetCurrentKeyGrandparentOverlappedBytes(key);
+  }
+
+  // Open output file if necessary
+  if (!HasBuilder()) {
+    s = open_file_func(*this);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  assert(builder_ != nullptr);
+  const Slice value(kv_node.value, kv_node.value_size);
+  s = current_output().validator.Add(key, value);
+  if (!s.ok()) {
+    return s;
+  }
+  builder_->Add(key, value);
+
+  stats_.num_output_records++;
+  current_output_file_size_ = builder_->EstimatedFileSize();
+
+  if (blob_garbage_meter_) {
+    s = blob_garbage_meter_->ProcessOutFlow(key, value);
+  }
+
+  if (!s.ok()) {
+    return s;
+  }
+
+  const ParsedInternalKey& ikey = kv_node.ikey;
+  s = current_output().meta.UpdateBoundaries(key, value, ikey.sequence,
+                                             ikey.type);
+
+  if (partitioner_) {
+    last_key_for_partitioner_.assign(ikey.user_key.data_,
+                                     ikey.user_key.size_);
   }
 
   return s;

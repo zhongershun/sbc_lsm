@@ -50,7 +50,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 10, ""); 
+DEFINE_int32(workloads, 7, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -954,6 +954,7 @@ void TestSBCFull() {
 
   DB* db = nullptr;
   Options options;
+  options.enable_sbc = true;
   options.use_direct_reads = true;
   options.disable_auto_compactions = true;
 
@@ -1048,25 +1049,25 @@ void TestSBCFull() {
 
 
   // ----------------- 把数据从头到尾scan一遍 -----------------------
-  std::vector<std::string> key_all2;
-  ScanDB(db, DBPath, options, 3, &key_all2);
+  // std::vector<std::string> key_all2;
+  // ScanDB(db, DBPath, options, 3, &key_all2);
 
-  std::vector<std::string> result;
-  std::set_difference(key_all.begin(), key_all.end(),
-                      key_all2.begin(), key_all2.end(),
-                      std::back_inserter(result));
+  // std::vector<std::string> result;
+  // std::set_difference(key_all.begin(), key_all.end(),
+  //                     key_all2.begin(), key_all2.end(),
+  //                     std::back_inserter(result));
 
-  std::ofstream outfile("lost.txt");
-  for (std::string x : result) {
-      outfile << x << '\n';
-  }
-  outfile.close();
+  // std::ofstream outfile("lost.txt");
+  // for (std::string x : result) {
+  //     outfile << x << '\n';
+  // }
+  // outfile.close();
 
-  std::ofstream outfile_all("all.txt");
-  for (std::string x : key_all) {
-      outfile_all << x << '\n';
-  }
-  outfile_all.close();
+  // std::ofstream outfile_all("all.txt");
+  // for (std::string x : key_all) {
+  //     outfile_all << x << '\n';
+  // }
+  // outfile_all.close();
 
   // ------------------------- SBC ------------------------------
   SBC(db, DBPath, options, "key", "key9");
@@ -1077,9 +1078,9 @@ void TestSBCFull() {
 }
 
 
-void TestSBCUniformIterator() {
+void TestSBCUniIterator() {
   std::string DBPath = "rocksdb_bench_SBC_1GB_MetaCut_" + std::to_string(FLAGS_value_size);
-  uint64_t data_size = 1ll << 30;
+  uint64_t data_size = 1400ll << 20;
   size_t value_size = FLAGS_value_size;
   size_t key_num = data_size / (value_size+12ll);
   FLAGS_read_count = 1;
@@ -1113,7 +1114,8 @@ void TestSBCUniformIterator() {
   // 如果数据库打不开或者强制重建数据库，才会重新插数据
   if(FLAGS_create_new_db || s_tmp != Status::OK()){
     Options options_ins;
-    options_ins.create_if_missing = true;  
+    options_ins.create_if_missing = true; 
+    options_ins.max_bytes_for_level_multiplier = 2; 
     InsertData(options_ins, DBPath, key_num, &hist_);
   }
 
@@ -1159,6 +1161,7 @@ void TestSBCUniformIterator() {
 
   auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end) {
     options_.enable_sbc = true;
+    options_.use_sbc_buffer = true;
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 
@@ -1190,52 +1193,52 @@ void TestSBCUniformIterator() {
   // ScanDB(db, DBPath, options, 2);
 
   // ------------------------- PointGet  --------------------------
-  auto s = DB::Open(options, DBPath, &db);
-  std::string value;
-  s = db->Get(ReadOptions(), "key000172896", &value);
-  delete db;
-
-  // ------------------------- SBC ------------------------------
-  SBC(db, DBPath, options, "key000162896", "key000177440");
-
-  // ------------------------- PointGet  --------------------------
-  s = DB::Open(options, DBPath, &db);
-  std::string value2;
-  s = db->Get(ReadOptions(), "key000172896", &value2);
-  assert(value2 == value);
-  delete db;
-
-
-  // ----------------- 把数据从头到尾scan一遍 -----------------------
-  std::vector<std::string> key_all2;
-  ScanDB(db, DBPath, options, 3, "key", "key9", &key_all2);
-
-  std::vector<std::string> result;
-  std::set_difference(key_all.begin(), key_all.end(),
-                      key_all2.begin(), key_all2.end(),
-                      std::back_inserter(result));
-
-  std::ofstream outfile("lost.txt");
-  for (std::string x : result) {
-      outfile << x << '\n';
-  }
-  outfile.close();
-
-  std::ofstream outfile_all("all.txt");
-  for (std::string x : key_all) {
-      outfile_all << x << '\n';
-  }
-  outfile_all.close();
+  // auto s = DB::Open(options, DBPath, &db);
+  // std::string value;
+  // s = db->Get(ReadOptions(), "key000172896", &value);
+  // delete db;
 
   // ------------------------- SBC ------------------------------
   SBC(db, DBPath, options, "key", "key9");
 
+  // ------------------------- PointGet  --------------------------
+  // s = DB::Open(options, DBPath, &db);
+  // std::string value2;
+  // s = db->Get(ReadOptions(), "key000172896", &value2);
+  // assert(value2 == value);
+  // delete db;
+
+
   // ----------------- 把数据从头到尾scan一遍 -----------------------
-  ScanDB(db, DBPath, options, 4, "key", "key9");
+  // std::vector<std::string> key_all2;
+  // ScanDB(db, DBPath, options, 3, "key", "key9", &key_all2);
+
+  // std::vector<std::string> result;
+  // std::set_difference(key_all.begin(), key_all.end(),
+  //                     key_all2.begin(), key_all2.end(),
+  //                     std::back_inserter(result));
+
+  // std::ofstream outfile("lost.txt");
+  // for (std::string x : result) {
+  //     outfile << x << '\n';
+  // }
+  // outfile.close();
+
+  // std::ofstream outfile_all("all.txt");
+  // for (std::string x : key_all) {
+  //     outfile_all << x << '\n';
+  // }
+  // outfile_all.close();
+
+  // ------------------------- SBC ------------------------------
+  // SBC(db, DBPath, options, "key", "key9");
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  // ScanDB(db, DBPath, options, 4, "key", "key9");
 
 }
 
-
+// 测试SBC能不能和L0 到 L1的合并同时进行
 void TestSBCWithComp0_1() {
   std::string DBPath = "rocksdb_bench_SBC_1GB_MetaCut_" + std::to_string(FLAGS_value_size);
   uint64_t data_size = 1ll << 30;
@@ -1279,6 +1282,7 @@ void TestSBCWithComp0_1() {
   DB* db = nullptr;
   Options options;
   options.enable_sbc = true;
+  options.use_sbc_buffer = false;
   options.max_bytes_for_level_multiplier = 2;
 
   auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, int idx, std::string key_start, std::string key_end, std::vector<std::string> *key_all = nullptr) {
@@ -1327,6 +1331,9 @@ void TestSBCWithComp0_1() {
   }
   static_cast<DBImpl*>(db)->WaitForCompact(1);
   delete db;
+
+  // ----------------- 把数据从头到尾scan一遍 -----------------------
+  ScanDB(db, DBPath, options, 1, "key", "key9");
 
 
   // ------------------------- SBC --------------------------
@@ -1793,7 +1800,7 @@ int main(int argc, char** argv) {
   } else if(FLAGS_workloads == 6) {
     rocksdb::TestSBCFull();
   } else if(FLAGS_workloads == 7) {
-    rocksdb::TestSBCUniformIterator();
+    rocksdb::TestSBCUniIterator();
   } else if(FLAGS_workloads == 8) {
     std::cout << FLAGS_workloads <<" TestSBCWithComp0_1()\n";
     rocksdb::TestSBCWithComp0_1();

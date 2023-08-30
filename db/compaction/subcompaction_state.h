@@ -189,6 +189,12 @@ class SubcompactionState {
                      const CompactionFileOpenFunc& open_file_func,
                      const CompactionFileCloseFunc& close_file_func);
 
+  Status AddFromBuffer(
+    const KeyValueNode& kv_node,
+    const CompactionFileOpenFunc& open_file_func,
+    const CompactionFileCloseFunc& close_file_func,
+    bool output_to_penultimate_level);
+
   // Close all compaction output files, both output_to_penultimate_level outputs
   // and normal outputs.
   Status CloseCompactionFiles(const Status& curr_status,
