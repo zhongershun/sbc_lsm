@@ -63,7 +63,8 @@ class SBCKeyValueBuffer {
     kv_node->value_size = value.size();
     kv_node->input_status = Status::OK();
 
-    auto s = queue_->push(kv_node);
+    bool s = false;
+    s = queue_->push(kv_node);
     if(s) {
       return Status::OK();
     } else {

@@ -50,7 +50,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 7, ""); 
+DEFINE_int32(workloads, 10, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -60,9 +60,10 @@ DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "SBC", "Scan, SBC, Compaction");
+DEFINE_string(operation, "Scan", "Scan, SBC, Compaction");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
+DEFINE_int32(use_sbc_buffer, 1, "0 disable, 1 KVBuffer, 2 File buffer");
 
 
 #define UNUSED(v) ((void)(v))
@@ -1399,7 +1400,7 @@ void TestSBCWithComp0_1() {
 
 void TestScanSBCCompactionLoad() {
   std::string DBPath = "rocksdb_bench_SBC_1GB_MetaCut_" + std::to_string(FLAGS_value_size);
-  uint64_t data_size = 1024ll << 20;
+  uint64_t data_size = 1ll << 30;
   size_t value_size = FLAGS_value_size;
   size_t key_num = data_size / (value_size+12ll);
   FLAGS_read_count = 1;
@@ -1435,7 +1436,7 @@ void TestScanSBCCompactionLoad() {
     options_ins.create_if_missing = true;  
     options_ins.num_levels = 2;
     options_ins.disable_auto_compactions = true;
-    InsertData(options_ins, DBPath, key_num, &hist_);
+    InsertData(options_ins, DBPath, key_num, &hist_, nullptr, FLAGS_key_range);
   }
 
   DB* db = nullptr;
@@ -1556,7 +1557,7 @@ void TestScanSBCCompaction() {
   if(FLAGS_disk_type == 0){
     DBPath = "/zyn/SSD/test_RocksDB/" + DBPath;
   }
-  system(("rm -rf " + DBPath).c_str());
+  // system(("rm -rf " + DBPath).c_str());
   // system(("cp -rf rocksdb_bench_SBC_1GB_raw_1024 " + DBPath).c_str());
 
   std::cout << "DB path:" << DBPath
@@ -1567,6 +1568,7 @@ void TestScanSBCCompaction() {
     << "\n Cache size: " << BytesToHumanString(FLAGS_cache_size) 
     << "\n Distribution: " << FLAGS_distribution
     << "\n Core num: " << FLAGS_core_num
+    << "\n Operation: " << FLAGS_operation
     << "\n";
   std::unordered_map<OperationType, std::shared_ptr<HistogramImpl>,
                      std::hash<unsigned char>> hist_;
@@ -1590,11 +1592,12 @@ void TestScanSBCCompaction() {
 
   DB* db = nullptr;
   Options options;
-  options.statistics = rocksdb::CreateDBStatistics();
   options.report_bg_io_stats = true;
   options.use_direct_reads = true;
   options.disable_auto_compactions = true;
   options.use_direct_io_for_flush_and_compaction = true;
+
+  options.statistics = rocksdb::CreateDBStatistics();
 
   if(FLAGS_cache_size > 0) {
     std::shared_ptr<Cache> cache = NewLRUCache(FLAGS_cache_size);
@@ -1641,12 +1644,15 @@ void TestScanSBCCompaction() {
 
   auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end, bool comp_l0 = false) {
     options_.enable_sbc = true;
+    options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 
-    auto start_ = std::chrono::system_clock::now();
+
+    auto hist_next = std::make_shared<HistogramImpl>();  
+    
     auto sbc_read_opt = ReadOptions();
-    sbc_read_opt.readahead_size = 2<<20;
+    // sbc_read_opt.readahead_size = 2<<20;
     Iterator *iter = nullptr;
     if(comp_l0) {
       iter = db_->NewSBCIterator(sbc_read_opt, nullptr, nullptr);
@@ -1657,16 +1663,28 @@ void TestScanSBCCompaction() {
     assert(iter->status().ok());
     assert(db_->IsCompacting());
     auto key_cnt = 0;
-    for(iter->SeekToFirst();iter->Valid();iter->SBCNext()) {
+
+    auto start_ = std::chrono::system_clock::now();
+    for(iter->SeekToFirst();iter->Valid();) {
+      auto start_next = std::chrono::system_clock::now();
+      iter->SBCNext();
+      auto end_next = std::chrono::system_clock::now();
       key_cnt++;
+      hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
     }
     auto end_ = std::chrono::system_clock::now();
+
     db_->FinishSBC(iter);
     assert(!db_->IsCompacting());
     
     std::cout << "SBC finished table num: " << FilesPerLevel(db_, 0) 
-      << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-      << ", Key cnt:" << key_cnt << "\n";
+      << "\nNext Duration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n" 
+      << "SBCNext\n" << hist_next->ToString() << "\n"
+      << "SBC compaction iter\n" << options_.statistics->getHistogramString(SBC_NEXT_LAT) << "\n"
+      << "Add key value buffer\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_BUFFER_LAT) << "\n"
+      << "Signal\n" << options_.statistics->getHistogramString(WAKEUP_WORKER_LAT) << "\n"
+      << "AddKeyValue\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_LAT) << "\n";
     delete db_;
   };
 

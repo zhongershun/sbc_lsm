@@ -575,6 +575,11 @@ enum Histograms : uint32_t {
   // Wait time for aborting async read in FilePrefetchBuffer destructor
   ASYNC_PREFETCH_ABORT_MICROS,
 
+  ADD_KEY_VALUE_LAT,
+  SBC_NEXT_LAT,
+  ADD_KEY_VALUE_BUFFER_LAT,
+  WAKEUP_WORKER_LAT,
+
   HISTOGRAM_ENUM_MAX,
 };
 

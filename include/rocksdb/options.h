@@ -1404,7 +1404,7 @@ struct DBOptions {
 
   bool enable_sbc = false;
 
-  bool use_sbc_buffer = enable_sbc;
+  int use_sbc_buffer = 0;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

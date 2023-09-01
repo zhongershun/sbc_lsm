@@ -1477,7 +1477,8 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_
       preclude_last_level_min_seqno_);
   SBC_iter_->SeekToFirst();
 
-  if(db_options_.use_sbc_buffer) {
+  // KVBuffer + SBCBuffer
+  if(db_options_.use_sbc_buffer == 1) {
     sbc_buffer_ = sbc_buffer;
     sbc_key_value_buffer_ = sbc_buffer->GetSBCKeyValueBuffer();
     auto SBCWorker = [this]() {
@@ -1485,44 +1486,73 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_
     };
     sbc_worker = std::thread(SBCWorker);
     sbc_running_ = true;
+  } else if(db_options_.use_sbc_buffer == 2) {
+
   }
 
   start_micros_ = db_options_.clock->NowMicros();
   return SBC_iter_->status();
 }
 
+#define ENABLE_WORKER
 // NOTE: 由scan负责把健值对塞进队列
 Status CompactionJob::AddKeyValue() {
   assert(SBC_iter_.get());
+  Status s = Status::OK();
+  uint64_t add_kv_buffer_end = 0;
+
+  auto start = db_options_.clock->NowMicros();
   SBC_iter_->SBCNext();
 
-  if(db_options_.use_sbc_buffer) {
+  auto sbc_next_end = db_options_.clock->NowMicros();
+
+  SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
+  const CompactionFileOpenFunc open_file_func =
+    [this, sub_compact](CompactionOutputs& outputs) {
+      return this->OpenCompactionOutputFile(sub_compact, outputs);
+    };
+
+  if(db_options_.use_sbc_buffer == 1) {
     // NOTE: 将健值对塞进缓冲区就退出
     auto in_stat = SBC_iter_->InputStatus();
     if(!in_stat.ok()) {
       return in_stat;
     }
-    auto s = sbc_key_value_buffer_->AddKeyValue(SBC_iter_->key(), SBC_iter_->value(), SBC_iter_->ikey());
+    s = sbc_key_value_buffer_->AddKeyValue(SBC_iter_->key(), SBC_iter_->value(), SBC_iter_->ikey());
+     add_kv_buffer_end = db_options_.clock->NowMicros();
+    
+    if(sbc_key_value_buffer_->size() > 20) {
+      cv_kv_buf_.Signal();
+    }
 
-    // 叫醒工作线程
-    cv_kv_buf_.Signal();
-    return s;
-  } else {
+  } else if(db_options_.use_sbc_buffer == 2) {
     // 不使用SBCBuffer
-    SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
-    const CompactionFileOpenFunc open_file_func =
-      [this, sub_compact](CompactionOutputs& outputs) {
-        return this->OpenCompactionOutputFile(sub_compact, outputs);
-      };
     const CompactionFileCloseFunc close_file_func =
       [this, sub_compact](CompactionOutputs& outputs, const Status& status,
                           const Slice& next_table_min_key) {
         return this->SBCSubmitFinishCompactionOutputFile(status, sub_compact, outputs,
                                                 next_table_min_key);
       };
-    return sub_compact->AddToOutput(*SBC_iter_, open_file_func, close_file_func);
+    s = sub_compact->AddToOutput(*SBC_iter_, open_file_func, close_file_func);
+  } else {
+    // 不使用SBCBuffer
+    SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
+    const CompactionFileCloseFunc close_file_func =
+      [this, sub_compact](CompactionOutputs& outputs, const Status& status,
+                          const Slice& next_table_min_key) {
+        return this->FinishCompactionOutputFile(status, sub_compact, outputs,
+                                                next_table_min_key);
+      };
+    s = sub_compact->AddToOutput(*SBC_iter_, open_file_func, close_file_func);
   }
+  auto end = db_options_.clock->NowMicros();
 
+  RecordTimeToHistogram(db_options_.statistics.get(), SBC_NEXT_LAT, sbc_next_end - start);
+  RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_BUFFER_LAT, add_kv_buffer_end - sbc_next_end);
+  RecordTimeToHistogram(db_options_.statistics.get(), WAKEUP_WORKER_LAT, end - add_kv_buffer_end);
+  RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_LAT, end - start);
+
+  return s;
 }
 
 // NOTE: 由工作线程负责把队列里的健值对塞进
@@ -1547,15 +1577,12 @@ Status CompactionJob::AddKeyValueFromKVBuffer() {
   Status s;
   uint64_t wake_up_cnt = 0;
   uint64_t add_from_buffer_cnt = 0;
+  auto SBC_worker_start = db_options_.clock->NowMicros();
+
+#ifdef ENABLE_WORKER
   while (sbc_running_ || sbc_key_value_buffer_->size()) {
     auto kv_node = sbc_key_value_buffer_->PopKeyValue();
     if(kv_node == nullptr) {
-      if(sbc_key_value_buffer_->size() > 10) {
-        ROCKS_LOG_ERROR(db_options_.info_log,
-                      "[%s] [JOB %d] Pop key value from buffer failed, buffer size: %" PRIu64,
-                      cfd->GetName().c_str(), job_id_, sbc_key_value_buffer_->size());
-        abort();
-      }
       cv_kv_buf_.Wait();
       wake_up_cnt++;
       continue;
@@ -1567,10 +1594,14 @@ Status CompactionJob::AddKeyValueFromKVBuffer() {
       break;
     }
   }
+#endif
+
+  auto SBC_worker_end = db_options_.clock->NowMicros();
   ROCKS_LOG_INFO(db_options_.info_log,
                  "[%s] [JOB %d] SBC worker finished, Status %s, Wake up times: %" PRIu64
-                 " Add from buffer times: %" PRIu64 " Buffer size: %" PRIu64,
-                 cfd->GetName().c_str(), job_id_, s.getState(), wake_up_cnt, add_from_buffer_cnt, sbc_key_value_buffer_->size());
+                 " Add from buffer times: %" PRIu64 " Buffer size: %" PRIu64 " Duration :%" PRIu64 " ms",
+                 cfd->GetName().c_str(), job_id_, s.getState(), wake_up_cnt, add_from_buffer_cnt, 
+                 sbc_key_value_buffer_->size(), SBC_worker_end - SBC_worker_start);
   return s;
 }
 
@@ -1662,12 +1693,13 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   const uint64_t current_entries = outputs.NumEntries();
 
   // NOTE: 删掉
-  s = outputs.Finish(s, seqno_time_mapping_);
+  // s = outputs.Finish(s, seqno_time_mapping_);
 #ifdef DISP_SBC
   std::cout << "New files: " << meta->fd.GetNumber() << '\n';
   outputs.DisplayKeyRange();
 #endif
-  // files_need_flush_.push_back({meta, outputs.GetFileWriter()});
+  files_need_flush_.push_back({meta, outputs.GetFileWriter()});
+  cv_kv_buf_.Signal();
 
   if (s.ok()) {
     // With accurate smallest and largest key, we can get a slightly more
@@ -1691,9 +1723,9 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   }
 
   // NOTE: 删掉 Finish and check for file errors
-  IOStatus io_s = outputs.WriterSyncClose(s, db_options_.clock, stats_,
-                                          db_options_.use_fsync);
-  // IOStatus io_s = IOStatus::OK();
+  // IOStatus io_s = outputs.WriterSyncClose(s, db_options_.clock, stats_,
+  //                                         db_options_.use_fsync);
+  IOStatus io_s = IOStatus::OK();
 
   if (s.ok() && io_s.ok()) {
     file_checksum = meta->file_checksum;
@@ -1995,10 +2027,15 @@ Status CompactionJob::FinishSBCJob() {
 
   // 把SBCbuffer的工作线程停下
   if(db_options_.use_sbc_buffer) {
+    ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Iterator finished, wait SBC worker",
+                 cfd->GetName().c_str(), job_id_);
     sbc_running_ = false;
     cv_kv_buf_.Signal();
     sbc_worker.join();
     delete sbc_key_value_buffer_;
+  } else if(db_options_.use_sbc_buffer == 2) {
+
   }
 
   if (status.ok() && cfd->IsDropped()) {
