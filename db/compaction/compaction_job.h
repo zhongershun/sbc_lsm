@@ -205,6 +205,7 @@ class CompactionJob {
   JobContext* GetJobCtx();
   void ReleaseSBC();
   Status FinishSBCJob();
+  Status FlushSSTable( SubcompactionState* sub_compact);
   Status SBCSubmitFinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionOutputs& outputs, const Slice& next_table_min_key);
@@ -249,8 +250,15 @@ class CompactionJob {
 
  private:
   struct WriteFileData {
+    WriteFileData (rocksdb::FileMetaData *meta, 
+      std::unique_ptr<rocksdb::WritableFileWriter> outfile,
+      uint64_t current_entries, CompactionOutputs::Output *output):
+      meta_(meta), outfile_(std::move(outfile)), 
+      current_entries_(current_entries), output_(output) {};
     FileMetaData *meta_;
-    std::shared_ptr<WritableFileWriter> outfile_;
+    std::unique_ptr<WritableFileWriter> outfile_;
+    uint64_t current_entries_;
+    CompactionOutputs::Output *output_;
   };
 
   friend class CompactionJobTestBase;
@@ -348,7 +356,7 @@ class CompactionJob {
   EventLogger* event_logger_;
 
   std::unique_ptr<rocksdb::CompactionIterator> SBC_iter_;
-  std::vector<WriteFileData> files_need_flush_;
+  LockFreeQueue<WriteFileData> files_need_flush_;
   SBCBuffer *sbc_buffer_;
   SBCKeyValueBuffer *sbc_key_value_buffer_;
   InstrumentedMutex mu_kv_buf_;

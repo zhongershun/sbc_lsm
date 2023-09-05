@@ -4,14 +4,17 @@
 #include <string.h>
 #include <vector>
 #include <atomic>
+#include <thread>
 
-namespace IOStat
-{
+
+namespace {
+
 static inline int64_t GetUnixTimeUs() {
   struct timeval tp;
   gettimeofday(&tp, nullptr);
   return (((int64_t) tp.tv_sec) * 1000000 + (int64_t) tp.tv_usec);
 }
+
 
 typedef struct IOPACKED         //定义一个io occupy的结构体  
 {  
@@ -30,6 +33,7 @@ typedef struct IOPACKED         //定义一个io occupy的结构体
     unsigned long long ticks;       //输入/输出操作花费的毫秒数
     unsigned long long aveq;        //输入/输出操作花费的加权毫秒数
 }IO_OCCUPY;  
+
 
 // Get target IO stat
 int GetIOStat(IO_OCCUPY *iost, const char *name)  
@@ -61,24 +65,6 @@ int GetIOStat(IO_OCCUPY *iost, const char *name)
     fclose(fd);  
     return 0;  
 }  
-  
-// void cal_iooccupy(IO_OCCUPY *o, IO_OCCUPY *n)  
-// {  
-//     unsigned long od, nd;  
-//     double io_use = 0;  
-      
-//     od = (unsigned long)(o->user + o->nice + o->system + o->idle + o->lowait + o->irq + o->softirq);//第一次(用户+优先级+系统+空闲)的时间再赋给od  
-//     nd = (unsigned long)(n->user + n->nice + n->system + n->idle + n->lowait + n->irq + n->softirq);//第二次(用户+优先级+系统+空闲)的时间再赋给od  
-//     double sum = nd - od;  
-//     double idle = n->idle+n->lowait - o->idle - o->lowait;  
-//     io_use = (sum-idle)*1.0 / sum;  
-//     // idle = n->user + n->system + n->nice - o->user - o->system - o->nice;  
-//     // io_use = idle / sum;  
-//     printf("usr %u, nice %u, sys %u, idle %u, lowait %u, irq %u, softirq %u\n", 
-//       n->user - o->user, n->nice - o->nice, n->system - o->system, 
-//       n->idle - o->idle, n->lowait - o->lowait, n->irq - o->irq, n->softirq - o->softirq);
-//     printf("IO usage: %.3f\n",io_use);  
-// }  
 
 struct Stat
 {
@@ -90,7 +76,10 @@ struct Stat
   double io_wait = 0; // ms
 };
 
+
 std::atomic<bool> run;
+
+
 // 最多追踪20个核心
 static void GetIOStatMs(std::string disk_name, int64_t interval = 100000/* us */){
   int cpu_core = 30; //这个线程使用的核心号
@@ -149,6 +138,21 @@ static void GetIOStatMs(std::string disk_name, int64_t interval = 100000/* us */
   std::cout << "Printed io stat\n";
 }
 
+}
+
+namespace IOStat
+{
+
+static std::thread StartIOStat(std::string disk_name, int64_t interval = 100000/* us */) {
+  return std::thread(GetIOStatMs, disk_name, interval);
+}
+
+static void StopIOStat(std::thread &t) {
+  run = false;
+  t.join();
+}
+
+} // namespace IOStat
 
 /*
 // examples
@@ -164,5 +168,3 @@ get_iooccupy((IO_OCCUPY *)&io_stat2);
 cal_iooccupy((IO_OCCUPY *)&io_stat1, (IO_OCCUPY *)&io_stat2);  
 
 */
-
-} // namespace IOStat

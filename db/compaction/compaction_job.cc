@@ -180,6 +180,7 @@ CompactionJob::CompactionJob(
       job_context_(job_context),
       table_cache_(std::move(table_cache)),
       event_logger_(event_logger),
+      files_need_flush_(200),
       sbc_buffer_(nullptr), // NOTE: 在createsbciter的时候赋值
       sbc_key_value_buffer_(nullptr), // NOTE: 在createsbciter的时候赋值
       cv_kv_buf_(&mu_kv_buf_),
@@ -1477,17 +1478,22 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_
       preclude_last_level_min_seqno_);
   SBC_iter_->SeekToFirst();
 
+  sbc_buffer_ = sbc_buffer;
+
   // KVBuffer + SBCBuffer
   if(db_options_.use_sbc_buffer == 1) {
-    sbc_buffer_ = sbc_buffer;
+    sbc_running_ = true;
     sbc_key_value_buffer_ = sbc_buffer->GetSBCKeyValueBuffer();
     auto SBCWorker = [this]() {
       this->AddKeyValueFromKVBuffer();
     };
     sbc_worker = std::thread(SBCWorker);
-    sbc_running_ = true;
   } else if(db_options_.use_sbc_buffer == 2) {
-
+    sbc_running_ = true;
+    auto SBCWorker = [this, sub_compact]() {
+      this->FlushSSTable(sub_compact);
+    };
+    sbc_worker = std::thread(SBCWorker);
   }
 
   start_micros_ = db_options_.clock->NowMicros();
@@ -1526,7 +1532,7 @@ Status CompactionJob::AddKeyValue() {
     }
 
   } else if(db_options_.use_sbc_buffer == 2) {
-    // 不使用SBCBuffer
+    // 使用SBCBuffer，但是只缓存文件
     const CompactionFileCloseFunc close_file_func =
       [this, sub_compact](CompactionOutputs& outputs, const Status& status,
                           const Slice& next_table_min_key) {
@@ -1535,8 +1541,7 @@ Status CompactionJob::AddKeyValue() {
       };
     s = sub_compact->AddToOutput(*SBC_iter_, open_file_func, close_file_func);
   } else {
-    // 不使用SBCBuffer
-    SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
+    // 不使用SBCBuffer，use_sbc_buffer = 0
     const CompactionFileCloseFunc close_file_func =
       [this, sub_compact](CompactionOutputs& outputs, const Status& status,
                           const Slice& next_table_min_key) {
@@ -1570,7 +1575,7 @@ Status CompactionJob::AddKeyValueFromKVBuffer() {
   const CompactionFileCloseFunc close_file_func =
     [this, sub_compact](CompactionOutputs& outputs, const Status& status,
                         const Slice& next_table_min_key) {
-      return this->SBCSubmitFinishCompactionOutputFile(status, sub_compact, outputs,
+      return this->FinishCompactionOutputFile(status, sub_compact, outputs,
                                               next_table_min_key);
     };
 
@@ -1692,14 +1697,11 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
 
   const uint64_t current_entries = outputs.NumEntries();
 
-  // NOTE: 删掉
-  // s = outputs.Finish(s, seqno_time_mapping_);
+  s = outputs.Finish(s, seqno_time_mapping_);
 #ifdef DISP_SBC
   std::cout << "New files: " << meta->fd.GetNumber() << '\n';
   outputs.DisplayKeyRange();
 #endif
-  files_need_flush_.push_back({meta, outputs.GetFileWriter()});
-  cv_kv_buf_.Signal();
 
   if (s.ok()) {
     // With accurate smallest and largest key, we can get a slightly more
@@ -1725,22 +1727,21 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   // NOTE: 删掉 Finish and check for file errors
   // IOStatus io_s = outputs.WriterSyncClose(s, db_options_.clock, stats_,
   //                                         db_options_.use_fsync);
-  IOStatus io_s = IOStatus::OK();
 
-  if (s.ok() && io_s.ok()) {
-    file_checksum = meta->file_checksum;
-    file_checksum_func_name = meta->file_checksum_func_name;
-  }
+  // if (s.ok() && io_s.ok()) {
+  //   file_checksum = meta->file_checksum;
+  //   file_checksum_func_name = meta->file_checksum_func_name;
+  // }
 
-  if (s.ok()) {
-    s = io_s;
-  }
-  if (sub_compact->io_status.ok()) {
-    sub_compact->io_status = io_s;
-    // Since this error is really a copy of the
-    // "normal" status, it does not also need to be checked
-    sub_compact->io_status.PermitUncheckedError();
-  }
+  // if (s.ok()) {
+  //   s = io_s;
+  // }
+  // if (sub_compact->io_status.ok()) {
+  //   sub_compact->io_status = io_s;
+  //   // Since this error is really a copy of the
+  //   // "normal" status, it does not also need to be checked
+  //   sub_compact->io_status.PermitUncheckedError();
+  // }
 
   TableProperties tp;
   if (s.ok()) {
@@ -1769,6 +1770,7 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
 
     // Also need to remove the file from outputs, or it will be added to the
     // VersionEdit.
+    std::cout << "Delete sst: " << meta->fd.GetNumber() << "\n";
     outputs.RemoveLastOutput();
     meta = nullptr;
   }
@@ -1784,48 +1786,142 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
                    meta->marked_for_compaction ? " (need compaction)" : "",
                    temperature_to_string[meta->temperature].c_str());
   }
-  std::string fname;
-  FileDescriptor output_fd;
-  uint64_t oldest_blob_file_number = kInvalidBlobFileNumber;
-  Status status_for_listener = s;
-  if (meta != nullptr) {
-    fname = GetTableFileName(meta->fd.GetNumber());
-    output_fd = meta->fd;
-    oldest_blob_file_number = meta->oldest_blob_file_number;
-  } else {
-    fname = "(nil)";
-    if (s.ok()) {
-      status_for_listener = Status::Aborted("Empty SST file not kept");
-    }
+
+  // NOTE: 删掉 Finish and check for file errors
+  // IOStatus io_s = outputs.WriterSyncClose(s, db_options_.clock, stats_,
+  //                                         db_options_.use_fsync);
+  if(s.ok()) {
+    files_need_flush_.push(new WriteFileData(meta, std::move(outputs.GetFileWriter()), current_entries, &outputs.current_output()));
+    cv_kv_buf_.Signal();
   }
-  EventHelpers::LogAndNotifyTableFileCreationFinished(
-      event_logger_, cfd->ioptions()->listeners, dbname_, cfd->GetName(), fname,
-      job_id_, output_fd, oldest_blob_file_number, tp,
-      TableFileCreationReason::kCompaction, status_for_listener, file_checksum,
-      file_checksum_func_name);
+
+  outputs.ResetBuilder();
+  return s;
+}
+
+Status CompactionJob::FlushSSTable(SubcompactionState* sub_compact) {
+  Status s = Status::OK();
+  ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
+
+  ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Flush SSTable start",
+                 cfd->GetName().c_str(), job_id_);
+
+  uint64_t wake_up_cnt = 0;
+  uint64_t add_from_buffer_cnt = 0;
+  auto SBC_worker_start = db_options_.clock->NowMicros();
+
+  while (sbc_running_ || files_need_flush_.get_length()) {
+    WriteFileData *sst_file = nullptr;
+    auto get_sst_file = files_need_flush_.pop(sst_file);
+
+    if(!get_sst_file) {
+      cv_kv_buf_.Wait();
+      wake_up_cnt++;
+      continue;
+    }
+    assert(sst_file);
+
+    FileMetaData *meta = &sst_file->output_->meta;
+    const uint64_t current_entries = sst_file->current_entries_;
+    auto tp = sst_file->output_->table_properties;
+
+    assert(meta);
+    assert(sst_file->output_);
+    if(meta != sst_file->meta_) {
+      std::cout << "Meta error\n";
+    }
+
+    uint64_t output_number = meta->fd.GetNumber();
+    // std::cout << "File number: " << output_number << "\n";
+
+    std::string file_checksum = kUnknownFileChecksum;
+    std::string file_checksum_func_name = kUnknownFileChecksumFuncName;
+
+    add_from_buffer_cnt++;
+    IOStatus io_s = IOStatus::OK();
+    {
+      if (s.ok()) {
+        StopWatch sw(db_options_.clock, stats_, COMPACTION_OUTFILE_SYNC_MICROS);
+        io_s = sst_file->outfile_->Sync(db_options_.use_fsync); // NOTE: 刷磁盘
+      }
+      if (s.ok() && io_s.ok()) {
+        io_s = sst_file->outfile_->Close();
+      }
+
+      if (s.ok() && io_s.ok()) {
+        // std::cout << meta->file_checksum << ", " << meta->file_checksum_func_name << "\n";
+        // meta->file_checksum = sst_file->outfile_->GetFileChecksum();
+        // meta->file_checksum_func_name = sst_file->outfile_->GetFileChecksumFuncName();
+      }
+
+      sst_file->outfile_.reset();
+    }
+
+    if(!s.ok()) {
+      break;
+    }
+
+    s = io_s;
+    if (sub_compact->io_status.ok()) {
+      sub_compact->io_status = io_s;
+      // Since this error is really a copy of the
+      // "normal" status, it does not also need to be checked
+      sub_compact->io_status.PermitUncheckedError();
+    }
+
+    std::string fname;
+    FileDescriptor output_fd;
+    uint64_t oldest_blob_file_number = kInvalidBlobFileNumber;
+    Status status_for_listener = s;
+    if (meta != nullptr) {
+      fname = GetTableFileName(meta->fd.GetNumber());
+      // std::cout << "File name: " << fname << "\n";
+      output_fd = meta->fd;
+      oldest_blob_file_number = meta->oldest_blob_file_number;
+    } else {
+      fname = "(nil)";
+      if (s.ok()) {
+        status_for_listener = Status::Aborted("Empty SST file not kept");
+      }
+    }
+    EventHelpers::LogAndNotifyTableFileCreationFinished(
+        event_logger_, cfd->ioptions()->listeners, dbname_, cfd->GetName(), fname,
+        job_id_, output_fd, oldest_blob_file_number, *(tp.get()),
+        TableFileCreationReason::kCompaction, status_for_listener, file_checksum,
+        file_checksum_func_name);
 
 #ifndef ROCKSDB_LITE
   // Report new file to SstFileManagerImpl
-  auto sfm =
-      static_cast<SstFileManagerImpl*>(db_options_.sst_file_manager.get());
-  if (sfm && meta != nullptr && meta->fd.GetPathId() == 0) {
-    Status add_s = sfm->OnAddFile(fname);
-    if (!add_s.ok() && s.ok()) {
-      s = add_s;
+    auto sfm =
+        static_cast<SstFileManagerImpl*>(db_options_.sst_file_manager.get());
+    if (sfm && meta != nullptr && meta->fd.GetPathId() == 0) {
+      Status add_s = sfm->OnAddFile(fname);
+      if (!add_s.ok() && s.ok()) {
+        s = add_s;
+      }
+      if (sfm->IsMaxAllowedSpaceReached()) {
+        // TODO(ajkr): should we return OK() if max space was reached by the final
+        // compaction output file (similarly to how flush works when full)?
+        s = Status::SpaceLimit("Max allowed space was reached");
+        TEST_SYNC_POINT(
+            "CompactionJob::FinishCompactionOutputFile:MaxAllowedSpaceReached");
+        InstrumentedMutexLock l(db_mutex_);
+        db_error_handler_->SetBGError(s, BackgroundErrorReason::kCompaction);
+      }
     }
-    if (sfm->IsMaxAllowedSpaceReached()) {
-      // TODO(ajkr): should we return OK() if max space was reached by the final
-      // compaction output file (similarly to how flush works when full)?
-      s = Status::SpaceLimit("Max allowed space was reached");
-      TEST_SYNC_POINT(
-          "CompactionJob::FinishCompactionOutputFile:MaxAllowedSpaceReached");
-      InstrumentedMutexLock l(db_mutex_);
-      db_error_handler_->SetBGError(s, BackgroundErrorReason::kCompaction);
-    }
-  }
 #endif
 
-  outputs.ResetBuilder();
+    delete sst_file;
+  }
+
+  auto SBC_worker_end = db_options_.clock->NowMicros();
+
+  ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Flush SSTable finished, Status %s, Wake up times: %" PRIu64
+                 " Flush SSTables num: %" PRIu64 " Files queue size: %" PRIu64 " Duration :%" PRIu64 " ms",
+                 cfd->GetName().c_str(), job_id_, s.getState(), wake_up_cnt, add_from_buffer_cnt, 
+                 files_need_flush_.get_length(), SBC_worker_end - SBC_worker_start);
   return s;
 }
 
@@ -2035,7 +2131,12 @@ Status CompactionJob::FinishSBCJob() {
     sbc_worker.join();
     delete sbc_key_value_buffer_;
   } else if(db_options_.use_sbc_buffer == 2) {
-
+    ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Iterator finished, wait Flush SSTables",
+                 cfd->GetName().c_str(), job_id_);
+    sbc_running_ = false;
+    cv_kv_buf_.Signal();
+    sbc_worker.join();
   }
 
   if (status.ok() && cfd->IsDropped()) {
@@ -2061,7 +2162,7 @@ Status CompactionJob::FinishSBCJob() {
   const CompactionFileCloseFunc close_file_func =
     [this, sub_compact](CompactionOutputs& outputs, const Status& s,
                         const Slice& next_table_min_key) {
-      return this->SBCSubmitFinishCompactionOutputFile(s, sub_compact, outputs,
+      return this->FinishCompactionOutputFile(s, sub_compact, outputs,
                                               next_table_min_key);
     };
   status = sub_compact->CloseCompactionFiles(status, open_file_func,
@@ -2419,6 +2520,9 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
         sub_compact->compaction->mutable_cf_options()->last_level_temperature;
   }
   fo_copy.temperature = temperature;
+  if(db_options_.use_sbc_buffer == 2) {
+    fo_copy.writable_file_max_buffer_size = sub_compact->compaction->max_output_file_size();
+  }
 
   Status s;
   IOStatus io_s = NewWritableFile(fs_.get(), fname, &writable_file, fo_copy);

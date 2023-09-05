@@ -39,6 +39,7 @@
 #include "time.h"
 #include "unistd.h"
 #include "util/random.h"
+#include "util/io_info.h"
 
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
@@ -60,10 +61,10 @@ DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "Scan", "Scan, SBC, Compaction");
+DEFINE_string(operation, "SBC", "Scan, SBC, Compaction");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
-DEFINE_int32(use_sbc_buffer, 1, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_int32(use_sbc_buffer, 2, "0 disable, 1 KVBuffer, 2 File buffer");
 
 
 #define UNUSED(v) ((void)(v))
@@ -1751,6 +1752,10 @@ void TestScanSBCCompaction() {
   prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
   prev_cpu_micros = clock->CPUMicros();
 
+  // Statistic IO
+  std::string disk_name = "nvme2n1p1 ";
+  std::thread io_stat = IOStat::StartIOStat(disk_name, 100000);
+
   if(FLAGS_operation == "Scan") {
     // ----------------- 把数据从头到尾scan一遍 -----------------------
     ScanDB(db, DBPath, options, 1);
@@ -1772,6 +1777,7 @@ void TestScanSBCCompaction() {
   } else {
 
   }
+  IOStat::StopIOStat(io_stat);
 
   now_cpu_micros = clock->CPUMicros();
   now_read_nanos = IOSTATS(read_nanos);

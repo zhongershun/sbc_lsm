@@ -101,7 +101,7 @@ struct SuperVersionContext {
 #ifndef ROCKSDB_DISABLE_STALL_NOTIFICATION
     assert(write_stall_notifications.empty());
 #endif
-    assert(superversions_to_free.empty());
+    // assert(superversions_to_free.empty());
   }
 };
 

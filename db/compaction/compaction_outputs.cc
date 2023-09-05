@@ -843,6 +843,7 @@ CompactionOutputs::CompactionOutputs(const Compaction* compaction,
   if (compaction->output_level() != 0) {
     FillFilesToCutForTtl();
   }
+  outputs_.reserve(100);
 }
 
 }  // namespace ROCKSDB_NAMESPACE

@@ -617,16 +617,15 @@ void TestMixWorkload() {
 
   // Statistic IO
   std::string disk_name = "nvme2n1p1 ";
-  std::thread io_stat = std::thread(IOStat::GetIOStatMs, disk_name, 100000);
+  std::thread io_stat = IOStat::StartIOStat(disk_name, 100000);
 
   // Wait workload finished
   for (size_t i = 0; i < client_num; i++) {
     client_threads[i].join();
   }
   CPUStat::run = false;
-  IOStat::run = false;
+  IOStat::StopIOStat(io_stat);
   cpu_rec.join();
-  io_stat.join();
 
   // Workload end
   auto end = std::chrono::system_clock::now();
@@ -1083,7 +1082,6 @@ void TestMixWorkloadWithDiffThread() {
 
   // Statistic IO
   // std::string disk_name = "nvme2n1p1 ";
-  // std::thread io_stat = std::thread(IOStat::GetIOStatMs, disk_name, 100000);
 
   // sleep(FLAGS_run_time);
   auto run_time = FLAGS_run_time * 1000; // ms
@@ -1105,9 +1103,7 @@ void TestMixWorkloadWithDiffThread() {
     client_thread.join();
   }
   CPUStat::run = false;
-  IOStat::run = false;
   cpu_rec.join();
-  // io_stat.join();
 
   // Workload end
   auto duration =  GetTimeIntervalMsFrom(start);
