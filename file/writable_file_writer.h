@@ -278,6 +278,10 @@ class WritableFileWriter {
     return flushed_size_.load(std::memory_order_acquire);
   }
 
+  uint64_t GetBufferLeftSize() const {
+    return buf_.CurrentSize();
+  }
+
   IOStatus InvalidateCache(size_t offset, size_t length) {
     return writable_file_->InvalidateCache(offset, length);
   }

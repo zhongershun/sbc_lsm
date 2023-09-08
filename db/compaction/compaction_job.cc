@@ -1082,6 +1082,14 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
   ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
 
+  if(db_options_.use_sbc_buffer == 3) {
+    sbc_running_ = true;
+    auto SBCWorker = [this, sub_compact]() {
+      this->FlushSSTable(sub_compact);
+    };
+    sbc_worker = std::thread(SBCWorker);
+  }
+
   // Create compaction filter and fail the compaction if
   // IgnoreSnapshots() = false because it is not supported anymore
   const CompactionFilter* compaction_filter =
@@ -1305,6 +1313,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
         return this->FinishCompactionOutputFile(status, sub_compact, outputs,
                                                 next_table_min_key);
       };
+  const CompactionFileCloseFunc submit_file_func =
+      [this, sub_compact](CompactionOutputs& outputs, const Status& status,
+                          const Slice& next_table_min_key) {
+        return this->SBCSubmitFinishCompactionOutputFile(status, sub_compact, outputs,
+                                                next_table_min_key);
+      };
 
   Status status;
   TEST_SYNC_POINT_CALLBACK(
@@ -1330,7 +1344,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     // and `close_file_func`.
     // TODO: it would be better to have the compaction file open/close moved
     // into `CompactionOutputs` which has the output file information.
-    status = sub_compact->AddToOutput(*c_iter, open_file_func, close_file_func);
+    if(db_options_.use_sbc_buffer == 3) {
+      status = sub_compact->AddToOutput(*c_iter, open_file_func, submit_file_func);
+    } else {
+      status = sub_compact->AddToOutput(*c_iter, open_file_func, close_file_func);
+    }
+
     if (!status.ok()) {
       break;
     }
@@ -1343,6 +1362,15 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     if (c_iter->status().IsManualCompactionPaused()) {
       break;
     }
+  }
+
+  if(db_options_.use_sbc_buffer == 3) {
+    ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Iterator finished, wait Flush SSTables",
+                 cfd->GetName().c_str(), job_id_);
+    sbc_running_ = false;
+    cv_kv_buf_.Signal();
+    sbc_worker.join();
   }
 
   sub_compact->compaction_job_stats.num_blobs_read =
@@ -1488,7 +1516,7 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_
       this->AddKeyValueFromKVBuffer();
     };
     sbc_worker = std::thread(SBCWorker);
-  } else if(db_options_.use_sbc_buffer == 2) {
+  } else if(db_options_.use_sbc_buffer == 2 || db_options_.use_sbc_buffer == 3) {
     sbc_running_ = true;
     auto SBCWorker = [this, sub_compact]() {
       this->FlushSSTable(sub_compact);
@@ -1531,7 +1559,7 @@ Status CompactionJob::AddKeyValue() {
       cv_kv_buf_.Signal();
     }
 
-  } else if(db_options_.use_sbc_buffer == 2) {
+  } else if(db_options_.use_sbc_buffer == 2 || db_options_.use_sbc_buffer == 3) {
     // 使用SBCBuffer，但是只缓存文件
     const CompactionFileCloseFunc close_file_func =
       [this, sub_compact](CompactionOutputs& outputs, const Status& status,
@@ -1792,7 +1820,7 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   //                                         db_options_.use_fsync);
   if(s.ok()) {
     files_need_flush_.push(new WriteFileData(meta, std::move(outputs.GetFileWriter()), current_entries, &outputs.current_output()));
-    cv_kv_buf_.Signal();
+    // cv_kv_buf_.Signal();
   }
 
   outputs.ResetBuilder();
@@ -1809,8 +1837,9 @@ Status CompactionJob::FlushSSTable(SubcompactionState* sub_compact) {
 
   uint64_t wake_up_cnt = 0;
   uint64_t add_from_buffer_cnt = 0;
+  cv_kv_buf_.Wait();
   auto SBC_worker_start = db_options_.clock->NowMicros();
-
+#if 1
   while (sbc_running_ || files_need_flush_.get_length()) {
     WriteFileData *sst_file = nullptr;
     auto get_sst_file = files_need_flush_.pop(sst_file);
@@ -1828,9 +1857,6 @@ Status CompactionJob::FlushSSTable(SubcompactionState* sub_compact) {
 
     assert(meta);
     assert(sst_file->output_);
-    if(meta != sst_file->meta_) {
-      std::cout << "Meta error\n";
-    }
 
     uint64_t output_number = meta->fd.GetNumber();
     // std::cout << "File number: " << output_number << "\n";
@@ -1843,6 +1869,11 @@ Status CompactionJob::FlushSSTable(SubcompactionState* sub_compact) {
     {
       if (s.ok()) {
         StopWatch sw(db_options_.clock, stats_, COMPACTION_OUTFILE_SYNC_MICROS);
+        ROCKS_LOG_INFO(db_options_.info_log,
+               "[%s] [JOB %d] Flush SSTable %" PRIu64 ", Flushed : %" PRIu64 ", need flush: %" PRIu64,
+               cfd->GetName().c_str(), job_id_, output_number, sst_file->outfile_->GetFlushedSize(), 
+               sst_file->outfile_->GetBufferLeftSize());
+
         io_s = sst_file->outfile_->Sync(db_options_.use_fsync); // NOTE: 刷磁盘
       }
       if (s.ok() && io_s.ok()) {
@@ -1914,7 +1945,7 @@ Status CompactionJob::FlushSSTable(SubcompactionState* sub_compact) {
 
     delete sst_file;
   }
-
+#endif
   auto SBC_worker_end = db_options_.clock->NowMicros();
 
   ROCKS_LOG_INFO(db_options_.info_log,
@@ -2130,7 +2161,7 @@ Status CompactionJob::FinishSBCJob() {
     cv_kv_buf_.Signal();
     sbc_worker.join();
     delete sbc_key_value_buffer_;
-  } else if(db_options_.use_sbc_buffer == 2) {
+  } else if(db_options_.use_sbc_buffer == 2 || db_options_.use_sbc_buffer == 3) {
     ROCKS_LOG_INFO(db_options_.info_log,
                  "[%s] [JOB %d] Iterator finished, wait Flush SSTables",
                  cfd->GetName().c_str(), job_id_);
@@ -2520,8 +2551,8 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
         sub_compact->compaction->mutable_cf_options()->last_level_temperature;
   }
   fo_copy.temperature = temperature;
-  if(db_options_.use_sbc_buffer == 2) {
-    fo_copy.writable_file_max_buffer_size = sub_compact->compaction->max_output_file_size();
+  if(db_options_.use_sbc_buffer == 2 || db_options_.use_sbc_buffer == 3) {
+    fo_copy.writable_file_max_buffer_size = sub_compact->compaction->max_output_file_size() + (1ll<<20);
   }
 
   Status s;

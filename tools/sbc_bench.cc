@@ -72,6 +72,7 @@ DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(l0_stalling_limit, 20, "");
 DEFINE_uint64(sbc_size, 1ll<<30, "");
+DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer");
 
 
 #define UNUSED(v) ((void)(v))
@@ -779,6 +780,7 @@ void TestMixWorkloadWithDiffThread() {
   options.use_direct_io_for_flush_and_compaction = true;
   options.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
   options.enable_sbc = FLAGS_enable_sbc;
+  options.use_sbc_buffer = FLAGS_use_sbc_buffer;
   std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
@@ -960,8 +962,11 @@ void TestMixWorkloadWithDiffThread() {
         // start = "key";
         // end = "key9";
         ReadOptions read_opt;
+        const Slice scan_start_key(start);
         const Slice scan_end_key(end);
+        read_opt.iterate_lower_bound = &scan_start_key;
         read_opt.iterate_upper_bound = &scan_end_key;
+        read_opt.readahead_size = 2<<20;
 
         // std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
 
@@ -970,11 +975,12 @@ void TestMixWorkloadWithDiffThread() {
         bool do_scan = false;
         if(FLAGS_client_num_scan_base == 0 || iter->GetSBCJob()!=nullptr) {
           do_scan = true;
-          for(iter->Seek(start);iter->Valid();iter->SBCNext()) {
-            if(iter->key().ToString() > end) {
-              std::cout << iter->key().ToString() << " " << end << "\n";
-              abort();
-            }
+          for(iter->SeekToFirst();iter->Valid();) {
+            iter->SBCNext();
+            // if(iter->key().ToString() > end) {
+            //   std::cout << iter->key().ToString() << " " << end << "\n";
+            //   abort();
+            // }
           }
         }
         auto end_ = std::chrono::system_clock::now();
@@ -1081,7 +1087,8 @@ void TestMixWorkloadWithDiffThread() {
   std::thread cpu_rec = std::thread(CPUStat::GetCPUStatMs, cpu_set);
 
   // Statistic IO
-  // std::string disk_name = "nvme2n1p1 ";
+  std::string disk_name = "nvme2n1p1 ";
+  auto io_stat = IOStat::StartIOStat(disk_name);
 
   // sleep(FLAGS_run_time);
   auto run_time = FLAGS_run_time * 1000; // ms
@@ -1104,6 +1111,7 @@ void TestMixWorkloadWithDiffThread() {
   }
   CPUStat::run = false;
   cpu_rec.join();
+  IOStat::StopIOStat(io_stat);
 
   // Workload end
   auto duration =  GetTimeIntervalMsFrom(start);

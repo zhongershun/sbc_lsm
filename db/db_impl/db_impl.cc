@@ -3720,7 +3720,7 @@ Status DBImpl::FinishSBC(rocksdb::Iterator* sbc_iter) {
     bg_cv_.SignalAll();
   }
   auto stream = event_logger_.Log();
-  stream << "event" << "SCB Done";
+  stream << "event" << "SBC Done";
   MaybeScheduleFlushOrCompaction();
 
   return status;

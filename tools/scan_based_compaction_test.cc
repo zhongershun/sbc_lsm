@@ -64,7 +64,7 @@ DEFINE_bool(disable_auto_compactions, true, "");
 DEFINE_string(operation, "SBC", "Scan, SBC, Compaction");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
-DEFINE_int32(use_sbc_buffer, 2, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer");
 
 
 #define UNUSED(v) ((void)(v))
@@ -1649,7 +1649,6 @@ void TestScanSBCCompaction() {
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 
-
     auto hist_next = std::make_shared<HistogramImpl>();  
     
     auto sbc_read_opt = ReadOptions();
@@ -1690,6 +1689,7 @@ void TestScanSBCCompaction() {
   };
 
   auto CompactionRange = [](DB* db_, std::string DBPath_, Options options_) {
+    options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 

@@ -223,10 +223,10 @@ void DBIter::SBCNext() {
       FindNextUserEntry(true /* skipping the current user key */, nullptr);
     }
     if(valid_ && iter_.GetSBCJob() && start_key_added_ == true) {
-      // if(user_comparator_.CompareWithoutTimestamp(
+      // if(iterate_upper_bound_ && user_comparator_.CompareWithoutTimestamp(
       //          iter_.key(), /*a_has_ts=*/false, *iterate_upper_bound_,
       //          /*b_has_ts=*/false) > 0) {
-      //   std::cout << iter_.key().ToString() << ", " << iterate_upper_bound_->ToString() << "\n";
+      //   std::cout << "Iter key: " << iter_.key().ToString() << ", Upper bound: " << iterate_upper_bound_->ToString() << "\n";
       //   // abort();
       // }
       iter_.GetSBCJob()->AddKeyValue();

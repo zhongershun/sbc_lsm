@@ -10,6 +10,7 @@
 #pragma once
 
 #include <set>
+#include <iostream>
 
 #include "table/internal_iterator.h"
 #include "test_util/sync_point.h"
@@ -86,6 +87,11 @@ class IteratorWrapperBase {
   }
   void Next() {
     assert(iter_);
+    if(iter_ == nullptr) {
+      std::cout << "iter_ is nullptr, valid: " << Valid() << "\n";
+      valid_ = false;
+      return;
+    }
     valid_ = iter_->NextAndGetResult(&result_);
     assert(!valid_ || iter_->status().ok());
   }
