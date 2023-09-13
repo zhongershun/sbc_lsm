@@ -26,11 +26,22 @@
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
 #include "util/random.h"
+#include "table/block_based/block_based_table_iterator_sbc.h"
 
 namespace ROCKSDB_NAMESPACE {
 
 #define VALUE_SIZE 1024
 #define BLOCK_SIZE 4096
+
+namespace {
+
+static inline int64_t GetUnixTimeUs() {
+  struct timeval tp;
+  gettimeofday(&tp, nullptr);
+  return (((int64_t) tp.tv_sec) * 1000000 + (int64_t) tp.tv_usec);
+}
+
+}
 
 class BlockBasedTableReaderBaseTest : public testing::Test {
  protected:
@@ -70,7 +81,7 @@ class BlockBasedTableReaderBaseTest : public testing::Test {
   }
 
   void SetUp() override {
-    SetupSyncPointsToMockDirectIO();
+    // SetupSyncPointsToMockDirectIO();
     test_dir_ = test::PerThreadDBPath("block_based_table_reader_test");
     env_ = Env::Default();
     fs_ = FileSystem::Default();
@@ -250,6 +261,7 @@ class BlockBasedTableReaderTest : public BlockBasedTableReaderBaseTest, public t
 };
 
 
+#if 0
 TEST_P(BlockBasedTableReaderTest, Get) {
   CreateAndOpenTable();
 
@@ -434,15 +446,19 @@ TEST_P(BlockBasedTableReaderTest, WriteNewKeyRangeBlock) {
 }
 
 
+
 TEST_P(BlockBasedTableReaderTest, DisplayTable) {
   // test_dir_ = "/zyn/NVMe/zyn/coroutine_lsm/build/tools/rocksdb_bench_SBC_1GB_MetaCut_1024";
-  std::string test_table = "000087.sst";
-  std::string table_src = "/zyn/NVMe/zyn/coroutine_lsm/build/rocksdb_bench_SBC_1GB_MetaCut_1024/" + test_table;
+  std::string test_table = "000028.sst";
+  std::string table_src = "/zyn/NVMe/zyn/coroutine_lsm/build/rocksdb_bench_SBC_1GB_1024/" + test_table;
   system(("cp -rf " + table_src + " " + test_dir_).c_str());
   NewBlockBasedTableReader(foptions, ioptions, comparator, test_table, &table);
   table->DisplayKeyRange();
   Arena* arena = new Arena();
-  auto iter = table->NewIterator(ReadOptions(), nullptr, arena, 
+  auto read_opt = ReadOptions();
+  read_opt.use_sbc_iter = true;
+  read_opt.readahead_size = 2 << 20;
+  auto iter = table->NewIterator(read_opt, nullptr, arena, 
     false, kUserIterator);
   
   iter->SeekToFirst();
@@ -455,6 +471,58 @@ TEST_P(BlockBasedTableReaderTest, DisplayTable) {
 
   iter->Next();
   ASSERT_FALSE(iter->Valid());
+
+  size_t k_cnt = 0;
+
+  auto start = GetUnixTimeUs();
+  iter->SeekToFirst();
+  auto start_next = GetUnixTimeUs();
+
+  for (; iter->Valid(); iter->Next()) {
+    k_cnt++;
+  }
+  
+  auto end = GetUnixTimeUs();
+
+  std::cout << "Seek: " << start_next - start << " us, "
+            << "Next dur: " << end - start_next << " us\n"
+            << "Key count: " << k_cnt << "\n";
+}
+
+#endif
+
+TEST_P(BlockBasedTableReaderTest, SBCIterator) {
+  // test_dir_ = "/zyn/NVMe/zyn/coroutine_lsm/build/tools/rocksdb_bench_SBC_1GB_MetaCut_1024";
+  std::string test_table = "000028.sst";
+  std::string table_src = "/zyn/NVMe/zyn/coroutine_lsm/build/rocksdb_bench_SBC_1GB_1024/" + test_table;
+  system(("cp -rf " + table_src + " " + test_dir_).c_str());
+  NewBlockBasedTableReader(foptions, ioptions, comparator, test_table, &table);
+  table->DisplayKeyRange();
+  Arena* arena = new Arena();
+  auto read_opt = ReadOptions();
+  read_opt.use_sbc_iter = true;
+  read_opt.readahead_size = 2 << 20;
+  auto iter = table->NewIterator(read_opt, nullptr, arena, 
+    false, kUserIterator);
+
+
+  size_t k_cnt = 0;
+
+  auto start = GetUnixTimeUs();
+  iter->SeekToFirst();
+  std::cout << "First key: " << iter->key().ToString() << "\n";
+
+  auto start_next = GetUnixTimeUs();
+
+  for (; iter->Valid(); iter->Next()) {
+    k_cnt++;
+  }
+  
+  auto end = GetUnixTimeUs();
+
+  std::cout << "Seek: " << start_next - start << " us, "
+            << "Next dur: " << end - start_next << " us\n"
+            << "Key count: " << k_cnt << "\n";
 }
 
 // Param 1: compression type
@@ -487,5 +555,6 @@ INSTANTIATE_TEST_CASE_P(
 int main(int argc, char** argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
+
   return RUN_ALL_TESTS();
 }

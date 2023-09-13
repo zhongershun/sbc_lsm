@@ -27,6 +27,7 @@
 #include <iostream>
 
 #include "db/arena_wrapped_db_iter.h"
+#include "db/arena_wrapped_db_iter_sbc.h"
 #include "db/builder.h"
 #include "db/compaction/compaction_job.h"
 #include "db/db_info_dumper.h"
@@ -3448,7 +3449,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
   SuperVersion* sv = cfd->GetReferencedSuperVersion(this);
   SequenceNumber snapshot = versions_->LastSequence();
 
-  ArenaWrappedDBIter* db_iter = NewArenaWrappedDbIterator(
+  ArenaWrappedDBIterSBC* db_iter = NewArenaWrappedDBIteratorSBC(
       env_, options, *cfd->ioptions(), sv->mutable_cf_options, sv->current,
       snapshot, sv->mutable_cf_options.max_sequential_skip_in_iterations,
       sv->version_number, read_callback, this, cfd, false,
@@ -3593,8 +3594,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
             merge_iter_builder.SetSBCJob(compaction_job);
         }
       }
-      internal_iter = merge_iter_builder.Finish(
-          options.ignore_range_deletions ? nullptr : db_iter);
+      internal_iter = merge_iter_builder.Finish(nullptr);
       SuperVersionHandle* cleanup = new SuperVersionHandle(
           this, &mutex_, sv,
           options.background_purge_on_iterator_cleanup ||

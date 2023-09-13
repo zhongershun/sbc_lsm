@@ -37,6 +37,7 @@ class DataBlockIter;
 class IndexBlockIter;
 class MetaBlockIter;
 class BlockPrefixIndex;
+class SBCDataBlockIter;
 
 // BlockReadAmpBitmap is a bitmap that map the ROCKSDB_NAMESPACE::Block data
 // bytes to a bitmap with ratio bytes_per_bit. Whenever we access a range of
@@ -195,6 +196,10 @@ class Block {
                                  Statistics* stats = nullptr,
                                  bool block_contents_pinned = false);
 
+  SBCDataBlockIter* NewDataIterator(const Comparator* raw_ucmp,
+                                      SequenceNumber global_seqno,
+                                      SBCDataBlockIter* iter, Statistics* stats,
+                                      bool block_contents_pinned = false, std::string *key_buf = nullptr);
   // Returns an MetaBlockIter for iterating over blocks containing metadata
   // (like Properties blocks).  Unlike data blocks, the keys for these blocks
   // do not contain sequence numbers, do not use a user-define comparator, and
@@ -285,27 +290,27 @@ class BlockIter : public InternalIteratorBase<TValue> {
   // 这里应该小于last_key的Offset
   bool Valid() const override { return current_ < end_; }
 
-  virtual void SeekToFirst() override final {
+  virtual void SeekToFirst() override  {
     SeekToFirstImpl();
     UpdateKey();
   }
 
-  virtual void SeekToLast() override final {
+  virtual void SeekToLast() override {
     SeekToLastImpl();
     UpdateKey();
   }
 
-  virtual void Seek(const Slice& target) override final {
+  virtual void Seek(const Slice& target) override {
     SeekImpl(target);
     UpdateKey();
   }
 
-  virtual void SeekForPrev(const Slice& target) override final {
+  virtual void SeekForPrev(const Slice& target) override {
     SeekForPrevImpl(target);
     UpdateKey();
   }
 
-  virtual void Next() override final {
+  virtual void Next() override {
     NextImpl();
     UpdateKey();
   }
@@ -750,5 +755,168 @@ class IndexBlockIter final : public BlockIter<IndexValue> {
   // to be BlockHandle and put it to decoded_value_
   inline void DecodeCurrentValue(bool is_shared);
 };
+
+class SBCDataBlockIter final : public BlockIter<Slice> {
+ public:
+  SBCDataBlockIter()
+      : BlockIter(), read_amp_bitmap_(nullptr), last_bitmap_offset_(0) {}
+  SBCDataBlockIter(const Comparator* raw_ucmp, const char* data, uint32_t restarts,
+                uint32_t num_restarts, SequenceNumber global_seqno,
+                BlockReadAmpBitmap* read_amp_bitmap, bool block_contents_pinned,
+                DataBlockHashIndex* data_block_hash_index)
+      : BlockIter() {
+    Initialize(raw_ucmp, data, restarts, num_restarts, global_seqno,
+               read_amp_bitmap, block_contents_pinned, data_block_hash_index);
+  }
+  void Initialize(const Comparator* raw_ucmp, const char* data,
+                  uint32_t restarts, uint32_t num_restarts,
+                  SequenceNumber global_seqno,
+                  BlockReadAmpBitmap* read_amp_bitmap,
+                  bool block_contents_pinned,
+                  DataBlockHashIndex* data_block_hash_index) {
+    InitializeBase(raw_ucmp, data, restarts, num_restarts, global_seqno,
+                   block_contents_pinned);
+    raw_key_.SetIsUserKey(false);
+    read_amp_bitmap_ = read_amp_bitmap;
+    last_bitmap_offset_ = current_ + 1;
+    data_block_hash_index_ = data_block_hash_index;
+    sbc_key_buf_.reserve(1024);
+    use_sbc_iter_ = false;
+  }
+
+  void UseSBCIter(bool use) {
+    use_sbc_iter_ = use;
+  }
+
+  void SeekToFirst() override  {
+    SeekToFirstImpl();
+    UpdateKey();
+    SaveKey();
+  }
+
+  void SeekToLast() override {
+    SeekToLastImpl();
+    UpdateKey();
+  }
+
+  void Seek(const Slice& target) override {
+    SeekImpl(target);
+    UpdateKey();
+    SaveKey();
+  }
+
+  void SeekForPrev(const Slice& target) override {
+    SeekForPrevImpl(target);
+    UpdateKey();
+  }
+
+  void Next() override {
+    NextImpl();
+    UpdateKey();
+    SaveKey();
+  }
+
+  Slice KeyForKVBuff() {
+    return key_kv_buf_;
+  }
+
+  void SaveKey() {
+    if(Valid() && use_sbc_iter_) {
+      auto k = key();
+      auto pos = sbc_key_buf_.size();
+      sbc_key_buf_.append(k.data(), k.size());
+
+      key_kv_buf_.data_ = sbc_key_buf_.c_str() + pos;
+      key_kv_buf_.size_ = k.size();
+    }
+  }
+
+  Slice value() const override {
+    assert(Valid());
+    if (read_amp_bitmap_ && current_ < end_ &&
+        current_ != last_bitmap_offset_) {
+      read_amp_bitmap_->Mark(current_ /* current entry offset */,
+                             NextEntryOffset() - 1);
+      last_bitmap_offset_ = current_;
+    }
+    return value_;
+  }
+
+  inline bool SeekForGet(const Slice& target) {
+    if (!data_block_hash_index_) {
+      SeekImpl(target);
+      UpdateKey();
+      return true;
+    }
+    bool res = SeekForGetImpl(target);
+    UpdateKey();
+    return res;
+  }
+
+  uint64_t GetEndKeyOffset(const Slice& target);
+
+  void Invalidate(const Status& s) override {
+    BlockIter::Invalidate(s);
+    // Clear prev entries cache.
+    prev_entries_keys_buff_.clear();
+    prev_entries_.clear();
+    prev_entries_idx_ = -1;
+    sbc_key_buf_.clear();
+  }
+
+ protected:
+  friend Block;
+  inline bool ParseNextDataKey(bool* is_shared);
+  void SeekToFirstImpl() override;
+  void SeekImpl(const Slice& target) override;
+  void NextImpl() override;
+
+  void SeekToLastImpl() override {
+    abort();
+  }
+  void SeekForPrevImpl(const Slice& target) override {
+    abort();
+  }
+  void PrevImpl() override {
+    abort();
+  }
+
+ private:
+  // read-amp bitmap
+  BlockReadAmpBitmap* read_amp_bitmap_;
+  // last `current_` value we report to read-amp bitmp
+  mutable uint32_t last_bitmap_offset_;
+  struct CachedPrevEntry {
+    explicit CachedPrevEntry(uint32_t _offset, const char* _key_ptr,
+                             size_t _key_offset, size_t _key_size, Slice _value)
+        : offset(_offset),
+          key_ptr(_key_ptr),
+          key_offset(_key_offset),
+          key_size(_key_size),
+          value(_value) {}
+
+    // offset of entry in block
+    uint32_t offset;
+    // Pointer to key data in block (nullptr if key is delta-encoded)
+    const char* key_ptr;
+    // offset of key in prev_entries_keys_buff_ (0 if key_ptr is not nullptr)
+    size_t key_offset;
+    // size of key
+    size_t key_size;
+    // value slice pointing to data in block
+    Slice value;
+  };
+  std::string prev_entries_keys_buff_;
+  std::vector<CachedPrevEntry> prev_entries_;
+  int32_t prev_entries_idx_ = -1;
+  std::string sbc_key_buf_;
+  bool use_sbc_iter_;
+  Slice key_kv_buf_;
+
+  DataBlockHashIndex* data_block_hash_index_;
+
+  bool SeekForGetImpl(const Slice& target);
+};
+
 
 }  // namespace ROCKSDB_NAMESPACE

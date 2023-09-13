@@ -207,7 +207,12 @@ void DBIter::SBCNext() {
       iter_.GetSBCJob()->AddKeyValue();
       start_key_added_ = true;
     }
-    iter_.SBCNext();
+    
+    // TODO: Next展开
+    {
+      iter_.SBCNext();
+    }
+
     PERF_COUNTER_ADD(internal_key_skipped_count, 1);
   }
 

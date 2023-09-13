@@ -13,6 +13,7 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/types.h"
 #include "db/compaction/compaction_job.h"
+#include "table/block_based/block_based_table_iterator_sbc.h"
 
 namespace ROCKSDB_NAMESPACE {
 

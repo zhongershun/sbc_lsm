@@ -73,6 +73,7 @@
 #include "util/crc32c.h"
 #include "util/stop_watch.h"
 #include "util/string_util.h"
+#include "table/block_based/block_based_table_iterator_sbc.h"
 
 namespace ROCKSDB_NAMESPACE {
 namespace {
@@ -1625,6 +1626,15 @@ DataBlockIter* BlockBasedTable::InitBlockIterator<DataBlockIter>(
 }
 
 template <>
+SBCDataBlockIter* BlockBasedTable::InitBlockIterator<SBCDataBlockIter>(
+    const Rep* rep, Block* block, BlockType block_type,
+    SBCDataBlockIter* input_iter, bool block_contents_pinned) {
+  return block->NewDataIterator(rep->internal_comparator.user_comparator(),
+                                rep->get_global_seqno(block_type), input_iter,
+                                rep->ioptions.stats, block_contents_pinned, nullptr);
+}
+
+template <>
 IndexBlockIter* BlockBasedTable::InitBlockIterator<IndexBlockIter>(
     const Rep* rep, Block* block, BlockType block_type,
     IndexBlockIter* input_iter, bool block_contents_pinned) {
@@ -2053,6 +2063,14 @@ InternalIterator* BlockBasedTable::NewIterator(
           rep_->index_type == BlockBasedTableOptions::kHashSearch,
       /*input_iter=*/nullptr, /*get_context=*/nullptr, &lookup_context));
   if (arena == nullptr) {
+    if(read_options.use_sbc_iter) {
+      return new BlockBasedTableIteratorSBC(
+        this, read_options, rep_->internal_comparator, std::move(index_iter),
+        !skip_filters && !read_options.total_order_seek &&
+            prefix_extractor != nullptr,
+        need_upper_bound_check, prefix_extractor, caller,
+        compaction_readahead_size, allow_unprepared_value);
+    }
     return new BlockBasedTableIterator(
         this, read_options, rep_->internal_comparator, std::move(index_iter),
         !skip_filters && !read_options.total_order_seek &&
@@ -2061,6 +2079,14 @@ InternalIterator* BlockBasedTable::NewIterator(
         compaction_readahead_size, allow_unprepared_value);
   } else {
     auto* mem = arena->AllocateAligned(sizeof(BlockBasedTableIterator));
+    if(read_options.use_sbc_iter) {
+      return new (mem) BlockBasedTableIteratorSBC(
+        this, read_options, rep_->internal_comparator, std::move(index_iter),
+        !skip_filters && !read_options.total_order_seek &&
+            prefix_extractor != nullptr,
+        need_upper_bound_check, prefix_extractor, caller,
+        compaction_readahead_size, allow_unprepared_value);
+    }
     return new (mem) BlockBasedTableIterator(
         this, read_options, rep_->internal_comparator, std::move(index_iter),
         !skip_filters && !read_options.total_order_seek &&

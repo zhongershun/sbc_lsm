@@ -660,6 +660,7 @@ set(SOURCES
         cache/secondary_cache.cc
         cache/sharded_cache.cc
         db/arena_wrapped_db_iter.cc
+        db/arena_wrapped_db_iter_sbc.cc
         db/blob/blob_contents.cc
         db/blob/blob_fetcher.cc
         db/blob/blob_file_addition.cc
@@ -807,6 +808,7 @@ set(SOURCES
         table/block_based/block_based_table_builder.cc
         table/block_based/block_based_table_factory.cc
         table/block_based/block_based_table_iterator.cc
+        table/block_based/block_based_table_iterator_sbc.cc
         table/block_based/block_based_table_reader.cc
         table/block_based/block_builder.cc
         table/block_based/block_prefetcher.cc

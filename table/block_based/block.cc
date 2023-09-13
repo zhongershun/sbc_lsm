@@ -143,6 +143,11 @@ void DataBlockIter::NextImpl() {
   ParseNextDataKey(&is_shared);
 }
 
+void SBCDataBlockIter::NextImpl() {
+  bool is_shared = false;
+  ParseNextDataKey(&is_shared);
+}
+
 void MetaBlockIter::NextImpl() {
   bool is_shared = false;
   ParseNextKey<CheckAndDecodeEntry>(&is_shared);
@@ -384,6 +389,133 @@ uint64_t DataBlockIter::GetEndKeyOffset(const Slice& target) {
   return end_key_off;
 }
 
+uint64_t SBCDataBlockIter::GetEndKeyOffset(const Slice& target) {
+  PERF_TIMER_GUARD(block_seek_nanos);
+  if (data_ == nullptr) {  // Not init yet
+    return UINT64_MAX;
+  }
+  uint32_t index = 0;
+  uint64_t end_key_off = 0;
+  bool skip_linear_scan = false;
+  {
+    if (restarts_ == 0) {
+      // SST files dedicated to range tombstones are written with index blocks
+      // that have no keys while also having `num_restarts_ == 1`. This would
+      // cause a problem for `BinarySeek()` as it'd try to access the first key
+      // which does not exist. We identify such blocks by the offset at which
+      // their restarts are stored, and return false to prevent any attempted
+      // key accesses.
+      return UINT64_MAX;
+    }
+
+    skip_linear_scan = false;
+    // Loop invariants:
+    // - Restart key at index `left` is less than or equal to the target key. The
+    //   sentinel index `-1` is considered to have a key that is less than all
+    //   keys.
+    // - Any restart keys after index `right` are strictly greater than the target
+    //   key.
+    int64_t left = -1, right = num_restarts_ - 1;
+    while (left != right) {
+      // The `mid` is computed by rounding up so it lands in (`left`, `right`].
+      int64_t mid = left + (right - left + 1) / 2;
+      uint32_t region_offset = GetRestartPoint(static_cast<uint32_t>(mid));
+      uint32_t shared, non_shared;
+      const char* key_ptr = DecodeKey()(
+          data_ + region_offset, data_ + restarts_, &shared, &non_shared);
+      if (key_ptr == nullptr || (shared != 0)) {
+        CorruptionError();
+        return UINT64_MAX;
+      }
+      Slice mid_key(key_ptr, non_shared);
+      raw_key_.SetKey(mid_key, false /* copy */);
+      int cmp = CompareCurrentKey(target);
+      if (cmp < 0) {
+        // Key at "mid" is smaller than "target". Therefore all
+        // blocks before "mid" are uninteresting.
+        left = mid;
+      } else if (cmp > 0) {
+        // Key at "mid" is >= "target". Therefore all blocks at or
+        // after "mid" are uninteresting.
+        right = mid - 1;
+      } else {
+        skip_linear_scan = true;
+        left = right = mid;
+      }
+    }
+
+    if (left == -1) {
+      // All keys in the block were strictly greater than `target`. So the very
+      // first key in the block is the final seek result.
+      skip_linear_scan = true;
+      index = 0;
+    } else {
+      index = static_cast<uint32_t>(left);
+    }
+  }
+
+  {
+    // SeekToRestartPoint() only does the lookup in the restart block. We need
+    // to follow it up with NextImpl() to position the iterator at the restart
+    // key.
+    // NOTE: upper_bound >= end_key(end_key为最后一个可见的key)，seek(upper_bound)
+    // 后的offset必然大于end_key的offset，从而满足end_key_off为end_key下一个起始位置
+    SeekToRestartPoint(index);
+    NextImpl();
+    int t;
+    if (!skip_linear_scan) {
+      // Linear search (within restart block) for first key >= target
+      uint32_t max_offset;
+      if (index + 1 < num_restarts_) {
+        // We are in a non-last restart interval. Since `BinarySeek()` guarantees
+        // the next restart key is strictly greater than `target`, we can
+        // terminate upon reaching it without any additional key comparison.
+        max_offset = GetRestartPoint(index + 1);
+      } else {
+        // We are in the last restart interval. The while-loop will terminate by
+        // `Valid()` returning false upon advancing past the block's last key.
+        max_offset = std::numeric_limits<uint32_t>::max();
+      }
+      while (true) {
+        NextImpl();
+        if (!Valid()) {
+          break;
+        }
+        t = CompareCurrentKey(target);
+        if (current_ == max_offset) {
+          assert(t > 0);
+          break;
+        } else if (t >= 0) {
+          break;
+        }
+      }
+    }
+    // if(t == 0 || skip_linear_scan) {
+    //   NextImpl();
+    // }
+  }
+  end_key_off = current_;
+
+  return end_key_off;
+}
+
+void SBCDataBlockIter::SeekImpl(const Slice& target) {
+  Slice seek_key = target;
+  PERF_TIMER_GUARD(block_seek_nanos);
+  if (data_ == nullptr) {  // Not init yet
+    return;
+  }
+  uint32_t index = 0;
+  bool skip_linear_scan = false;
+  bool ok = BinarySeek<DecodeKey>(seek_key, &index, &skip_linear_scan);
+
+  if (!ok) {
+    return;
+  }
+  FindKeyAfterBinarySeek(seek_key, index, skip_linear_scan);
+}
+
+
 void DataBlockIter::SeekImpl(const Slice& target) {
   Slice seek_key = target;
   PERF_TIMER_GUARD(block_seek_nanos);
@@ -536,6 +668,104 @@ bool DataBlockIter::SeekForGetImpl(const Slice& target) {
   return true;
 }
 
+
+bool SBCDataBlockIter::SeekForGetImpl(const Slice& target) {
+  Slice target_user_key = ExtractUserKey(target);
+  uint32_t map_offset = restarts_ + num_restarts_ * sizeof(uint32_t);
+  uint8_t entry =
+      data_block_hash_index_->Lookup(data_, map_offset, target_user_key);
+
+  if (entry == kCollision) {
+    // HashSeek not effective, falling back
+    SeekImpl(target);
+    return true;
+  }
+
+  if (entry == kNoEntry) {
+    // Even if we cannot find the user_key in this block, the result may
+    // exist in the next block. Consider this example:
+    //
+    // Block N:    [aab@100, ... , app@120]
+    // boundary key: axy@50 (we make minimal assumption about a boundary key)
+    // Block N+1:  [axy@10, ...   ]
+    //
+    // If seek_key = axy@60, the search will starts from Block N.
+    // Even if the user_key is not found in the hash map, the caller still
+    // have to continue searching the next block.
+    //
+    // In this case, we pretend the key is the the last restart interval.
+    // The while-loop below will search the last restart interval for the
+    // key. It will stop at the first key that is larger than the seek_key,
+    // or to the end of the block if no one is larger.
+    entry = static_cast<uint8_t>(num_restarts_ - 1);
+  }
+
+  uint32_t restart_index = entry;
+
+  // check if the key is in the restart_interval
+  assert(restart_index < num_restarts_);
+  SeekToRestartPoint(restart_index);
+  current_ = GetRestartPoint(restart_index);
+
+  uint32_t limit = restarts_;
+  if (restart_index + 1 < num_restarts_) {
+    limit = GetRestartPoint(restart_index + 1);
+  }
+  while (current_ < limit) {
+    bool shared;
+    // Here we only linear seek the target key inside the restart interval.
+    // If a key does not exist inside a restart interval, we avoid
+    // further searching the block content across restart interval boundary.
+    //
+    // TODO(fwu): check the left and right boundary of the restart interval
+    // to avoid linear seek a target key that is out of range.
+    if (!ParseNextDataKey(&shared) || CompareCurrentKey(target) >= 0) {
+      // we stop at the first potential matching user key.
+      break;
+    }
+  }
+
+  if (current_ == end_) {
+    // Search reaches to the end of the block. There are three possibilites:
+    // 1) there is only one user_key match in the block (otherwise collsion).
+    //    the matching user_key resides in the last restart interval, and it
+    //    is the last key of the restart interval and of the block as well.
+    //    ParseNextKey() skiped it as its [ type | seqno ] is smaller.
+    //
+    // 2) The seek_key is not found in the HashIndex Lookup(), i.e. kNoEntry,
+    //    AND all existing user_keys in the restart interval are smaller than
+    //    seek_user_key.
+    //
+    // 3) The seek_key is a false positive and happens to be hashed to the
+    //    last restart interval, AND all existing user_keys in the restart
+    //    interval are smaller than seek_user_key.
+    //
+    // The result may exist in the next block each case, so we return true.
+    return true;
+  }
+
+  if (icmp_->user_comparator()->Compare(raw_key_.GetUserKey(),
+                                        target_user_key) != 0) {
+    // the key is not in this block and cannot be at the next block either.
+    return false;
+  }
+
+  // Here we are conservative and only support a limited set of cases
+  ValueType value_type = ExtractValueType(raw_key_.GetInternalKey());
+  if (value_type != ValueType::kTypeValue &&
+      value_type != ValueType::kTypeDeletion &&
+      value_type != ValueType::kTypeSingleDeletion &&
+      value_type != ValueType::kTypeBlobIndex &&
+      value_type != ValueType::kTypeWideColumnEntity) {
+    SeekImpl(target);
+    return true;
+  }
+
+  // Result found, and the iter is correctly set.
+  return true;
+}
+
+
 void IndexBlockIter::SeekImpl(const Slice& target) {
   TEST_SYNC_POINT("IndexBlockIter::Seek:0");
   PERF_TIMER_GUARD(block_seek_nanos);
@@ -624,6 +854,15 @@ void MetaBlockIter::SeekForPrevImpl(const Slice& target) {
 }
 
 void DataBlockIter::SeekToFirstImpl() {
+  if (data_ == nullptr) {  // Not init yet
+    return;
+  }
+  SeekToRestartPoint(0);
+  bool is_shared = false;
+  ParseNextDataKey(&is_shared);
+}
+
+void SBCDataBlockIter::SeekToFirstImpl() {
   if (data_ == nullptr) {  // Not init yet
     return;
   }
@@ -735,6 +974,33 @@ bool BlockIter<TValue>::ParseNextKey(bool* is_shared) {
     return true;
   }
 }
+
+bool SBCDataBlockIter::ParseNextDataKey(bool* is_shared) {
+  if (ParseNextKey<DecodeEntry>(is_shared)) {
+#ifndef NDEBUG
+    if (global_seqno_ != kDisableGlobalSequenceNumber) {
+      // If we are reading a file with a global sequence number we should
+      // expect that all encoded sequence numbers are zeros and any value
+      // type is kTypeValue, kTypeMerge, kTypeDeletion,
+      // kTypeDeletionWithTimestamp, or kTypeRangeDeletion.
+      uint64_t packed = ExtractInternalKeyFooter(raw_key_.GetKey());
+      SequenceNumber seqno;
+      ValueType value_type;
+      UnPackSequenceAndType(packed, &seqno, &value_type);
+      assert(value_type == ValueType::kTypeValue ||
+             value_type == ValueType::kTypeMerge ||
+             value_type == ValueType::kTypeDeletion ||
+             value_type == ValueType::kTypeDeletionWithTimestamp ||
+             value_type == ValueType::kTypeRangeDeletion);
+      assert(seqno == 0);
+    }
+#endif  // NDEBUG
+    return true;
+  } else {
+    return false;
+  }
+}
+
 
 bool DataBlockIter::ParseNextDataKey(bool* is_shared) {
   if (ParseNextKey<DecodeEntry>(is_shared)) {
@@ -1162,6 +1428,41 @@ MetaBlockIter* Block::NewMetaIterator(bool block_contents_pinned) {
   }
   return iter;
 }
+
+SBCDataBlockIter* Block::NewDataIterator(const Comparator* raw_ucmp,
+                                      SequenceNumber global_seqno,
+                                      SBCDataBlockIter* iter, Statistics* stats,
+                                      bool block_contents_pinned, std::string *key_buf) {
+  SBCDataBlockIter* ret_iter;
+  if (iter != nullptr) {
+    ret_iter = iter;
+  } else {
+    ret_iter = new SBCDataBlockIter;
+  }
+  if (size_ < 2 * sizeof(uint32_t)) {
+    ret_iter->Invalidate(Status::Corruption("bad block contents"));
+    return ret_iter;
+  }
+  if (num_restarts_ == 0) {
+    // Empty block.
+    ret_iter->Invalidate(Status::OK());
+    return ret_iter;
+  } else {
+    ret_iter->Initialize(
+        raw_ucmp, data_, restart_offset_, num_restarts_, global_seqno,
+        read_amp_bitmap_.get(), block_contents_pinned,
+        data_block_hash_index_.Valid() ? &data_block_hash_index_ : nullptr);
+    if (read_amp_bitmap_) {
+      if (read_amp_bitmap_->GetStatistics() != stats) {
+        // DB changed the Statistics pointer, we need to notify read_amp_bitmap_
+        read_amp_bitmap_->SetStatistics(stats);
+      }
+    }
+  }
+
+  return ret_iter;
+}
+
 
 DataBlockIter* Block::NewDataIterator(const Comparator* raw_ucmp,
                                       SequenceNumber global_seqno,

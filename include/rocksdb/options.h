@@ -1711,6 +1711,9 @@ struct ReadOptions {
   // Default: true
   bool optimize_multiget_for_io;
 
+  // Default: false
+  bool use_sbc_iter;
+
   ReadOptions();
   ReadOptions(bool cksum, bool cache);
 };

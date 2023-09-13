@@ -12,30 +12,32 @@
 #include <set>
 #include <iostream>
 
+#include "table/merging_iterator.h"
+
 #include "table/internal_iterator.h"
 #include "test_util/sync_point.h"
 
 namespace ROCKSDB_NAMESPACE {
 
-// A internal wrapper class with an interface similar to Iterator that caches
-// the valid() and key() results for an underlying iterator.
-// This can help avoid virtual function calls and also gives better
-// cache locality.
+class Arena;
+// Return an empty iterator (yields nothing) allocated from arena.
 template <class TValue = Slice>
-class IteratorWrapperBase {
+extern InternalIteratorBase<TValue>* NewEmptyInternalIterator(Arena* arena);
+
+class IteratorWrapperMergeIterator {
  public:
-  IteratorWrapperBase() : iter_(nullptr), valid_(false) {}
-  explicit IteratorWrapperBase(InternalIteratorBase<TValue>* _iter)
+  IteratorWrapperMergeIterator() : iter_(nullptr), valid_(false) {}
+  explicit IteratorWrapperMergeIterator(MergingIterator* _iter)
       : iter_(nullptr) {
     Set(_iter);
   }
-  ~IteratorWrapperBase() {}
-  InternalIteratorBase<TValue>* iter() const { return iter_; }
+  ~IteratorWrapperMergeIterator() {}
+  MergingIterator* iter() const { return iter_; }
 
   // Set the underlying Iterator to _iter and return
   // previous underlying Iterator.
-  InternalIteratorBase<TValue>* Set(InternalIteratorBase<TValue>* _iter) {
-    InternalIteratorBase<TValue>* old_iter = iter_;
+ MergingIterator* Set(MergingIterator* _iter) {
+    MergingIterator* old_iter = iter_;
 
     iter_ = _iter;
     if (iter_ == nullptr) {
@@ -51,7 +53,7 @@ class IteratorWrapperBase {
       if (!is_arena_mode) {
         delete iter_;
       } else {
-        iter_->~InternalIteratorBase<TValue>();
+        iter_->~MergingIterator();
       }
     }
   }
@@ -62,7 +64,7 @@ class IteratorWrapperBase {
     assert(Valid());
     return result_.key;
   }
-  TValue value() const {
+  Slice value() const {
     assert(Valid());
     return iter_->value();
   }
@@ -173,7 +175,7 @@ class IteratorWrapperBase {
     return iter_->user_key();
   }
 
-  void UpdateReadaheadState(InternalIteratorBase<TValue>* old_iter) {
+  void UpdateReadaheadState(MergingIterator* old_iter) {
     if (old_iter && iter_) {
       ReadaheadFileInfo readahead_file_info;
       old_iter->GetReadaheadState(&readahead_file_info);
@@ -195,17 +197,11 @@ class IteratorWrapperBase {
       result_.value_prepared = false;
     }
   }
-
-  InternalIteratorBase<TValue>* iter_;
+  
+  MergingIterator* iter_;
   IterateResult result_;
   bool valid_;
 };
 
-using IteratorWrapper = IteratorWrapperBase<Slice>;
-
-class Arena;
-// Return an empty iterator (yields nothing) allocated from arena.
-template <class TValue = Slice>
-extern InternalIteratorBase<TValue>* NewEmptyInternalIterator(Arena* arena);
 
 }  // namespace ROCKSDB_NAMESPACE
