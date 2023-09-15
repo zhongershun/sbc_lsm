@@ -976,7 +976,52 @@ bool BlockIter<TValue>::ParseNextKey(bool* is_shared) {
 }
 
 bool SBCDataBlockIter::ParseNextDataKey(bool* is_shared) {
-  if (ParseNextKey<DecodeEntry>(is_shared)) {
+  bool parse_key_ans = false;
+  {
+    current_ = NextEntryOffset();
+    const char* p = data_ + current_;
+    const char* limit = data_ + end_;  // Restarts come right after data
+
+    if (p >= limit) {
+      // No more entries to return.  Mark as invalid.
+      current_ = restarts_;
+      restart_index_ = num_restarts_;
+      parse_key_ans = false;
+      goto out;
+    }
+    // Decode next entry
+    uint32_t shared, non_shared, value_length;
+    p = DecodeEntry()(p, limit, &shared, &non_shared, &value_length);
+    if (p == nullptr || raw_key_.Size() < shared) {
+      CorruptionError();
+      parse_key_ans = false;
+      goto out;
+    } else {
+      if (shared == 0) {
+        *is_shared = false;
+        // If this key doesn't share any bytes with prev key then we don't need
+        // to decode it and can use its address in the block directly.
+        raw_key_.SetKey(Slice(p, non_shared), false /* copy */);
+      } else {
+        // This key share `shared` bytes with prev key, we need to decode it
+        *is_shared = true;
+        raw_key_.TrimAppend(shared, p, non_shared);
+      }
+      value_ = Slice(p + non_shared, value_length);
+      if (shared == 0) {
+        while (restart_index_ + 1 < num_restarts_ &&
+              GetRestartPoint(restart_index_ + 1) < current_) {
+          ++restart_index_;
+        }
+      }
+      // else we are in the middle of a restart interval and the restart_index_
+      // thus has not changed
+      parse_key_ans = true;
+    }
+  }
+  out:
+
+  if (parse_key_ans) {
 #ifndef NDEBUG
     if (global_seqno_ != kDisableGlobalSequenceNumber) {
       // If we are reading a file with a global sequence number we should
@@ -1433,6 +1478,7 @@ SBCDataBlockIter* Block::NewDataIterator(const Comparator* raw_ucmp,
                                       SequenceNumber global_seqno,
                                       SBCDataBlockIter* iter, Statistics* stats,
                                       bool block_contents_pinned, std::string *key_buf) {
+  // std::cout << "InitSBCDataBlockIter\n ";
   SBCDataBlockIter* ret_iter;
   if (iter != nullptr) {
     ret_iter = iter;
@@ -1468,6 +1514,7 @@ DataBlockIter* Block::NewDataIterator(const Comparator* raw_ucmp,
                                       SequenceNumber global_seqno,
                                       DataBlockIter* iter, Statistics* stats,
                                       bool block_contents_pinned) {
+  // std::cout << "Init DataBlockIter\n ";
   DataBlockIter* ret_iter;
   if (iter != nullptr) {
     ret_iter = iter;

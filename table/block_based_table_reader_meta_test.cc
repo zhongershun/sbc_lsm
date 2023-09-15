@@ -496,21 +496,25 @@ TEST_P(BlockBasedTableReaderTest, SBCIterator) {
   std::string test_table = "000028.sst";
   std::string table_src = "/zyn/NVMe/zyn/coroutine_lsm/build/rocksdb_bench_SBC_1GB_1024/" + test_table;
   system(("cp -rf " + table_src + " " + test_dir_).c_str());
+  foptions.use_direct_reads = true;
+
   NewBlockBasedTableReader(foptions, ioptions, comparator, test_table, &table);
   table->DisplayKeyRange();
   Arena* arena = new Arena();
   auto read_opt = ReadOptions();
+  
   read_opt.use_sbc_iter = true;
-  read_opt.readahead_size = 2 << 20;
+
+  // read_opt.fill_cache = false;
+
   auto iter = table->NewIterator(read_opt, nullptr, arena, 
     false, kUserIterator);
-
 
   size_t k_cnt = 0;
 
   auto start = GetUnixTimeUs();
   iter->SeekToFirst();
-  std::cout << "First key: " << iter->key().ToString() << "\n";
+  std::cout << "First key: " << iter->user_key().ToString() << "\n";
 
   auto start_next = GetUnixTimeUs();
 
@@ -520,9 +524,39 @@ TEST_P(BlockBasedTableReaderTest, SBCIterator) {
   
   auto end = GetUnixTimeUs();
 
+
+  IOOptions opts;
+  uint64_t offset = 0;
+  size_t n = table->get_rep()->last_key_block_offset + table->get_rep()->last_key_offset_in_block;
+  Slice result; // 返回的Block
+  char* scratch = nullptr; // 
+  AlignedBuf aligned_buf;
+
+  table->get_rep()->file->Read(opts, offset, n, &result, scratch, &aligned_buf, read_opt.rate_limiter_priority);
+
+  auto end_load_file = GetUnixTimeUs();
+
+  for (size_t i = 0; i < result.size(); i++)
+  {
+    char t = result[i];
+    (void)(t);
+  }
+
+  auto end_scan_buf = GetUnixTimeUs();
+
+  if(read_opt.use_sbc_iter) {
+    std::cout << "Use fast iter\n";
+  } else {
+    std::cout << "Use basic iter\n";
+  }
+
   std::cout << "Seek: " << start_next - start << " us, "
             << "Next dur: " << end - start_next << " us\n"
-            << "Key count: " << k_cnt << "\n";
+            << "Dur: " << end - start << " us\n"
+            << "Key count: " << k_cnt << "\n"
+            << "Load file direct, size: " << result.size() / 1024 
+            << " kB , Dur: " << end_load_file - end << " us\n"
+            << "Scan dur: " << end_scan_buf - end_load_file << " us\n";
 }
 
 // Param 1: compression type
@@ -532,7 +566,7 @@ TEST_P(BlockBasedTableReaderTest, SBCIterator) {
 INSTANTIATE_TEST_CASE_P(
     DisplayTable, BlockBasedTableReaderTest,
     ::testing::Combine(
-        ::testing::ValuesIn(GetSupportedCompressions()), ::testing::Bool(),
+        ::testing::ValuesIn(GetSupportedCompressions()), ::testing::Values(false),
         ::testing::Values(BlockBasedTableOptions::IndexType::kBinarySearch),
         ::testing::Values(false)));
 

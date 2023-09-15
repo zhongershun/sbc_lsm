@@ -297,6 +297,15 @@ class BlockBasedTable : public TableReader {
   TBlockIter* NewDataBlockIterator(const ReadOptions& ro,
                                    CachableEntry<Block>& block,
                                    TBlockIter* input_iter, Status s) const;
+  template <typename TBlockIter>
+  TBlockIter* NewDataBlockIteratorFromBuffer(const ReadOptions& ro,
+                                   const BlockHandle& block_handle,
+                                   TBlockIter* input_iter, BlockType block_type,
+                                   GetContext* get_context,
+                                   BlockCacheLookupContext* lookup_context,
+                                   FilePrefetchBuffer* prefetch_buffer,
+                                   bool for_compaction, bool async_read,
+                                   Status& s, const char *buff, Block *&ret_block) const;
 
   class PartitionedIndexIteratorState;
 

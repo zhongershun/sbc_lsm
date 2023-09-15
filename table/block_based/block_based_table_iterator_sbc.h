@@ -17,6 +17,9 @@
 namespace ROCKSDB_NAMESPACE {
 // NOTE: kForward only
 // Iterates over the contents of BlockBasedTable.
+
+constexpr size_t kKVBufferSize = 1024;
+
 class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   // compaction_readahead_size: its value will only be used if for_compaction =
   // true
@@ -45,9 +48,15 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         check_filter_(check_filter),
         need_upper_bound_check_(need_upper_bound_check),
         async_read_in_progress_(false),
-        kv_queue_() {}
+        kv_queue_(),
+        queue_size_(kKVBufferSize),
+        block_start_offset_(0) {
+          key_buf_.reserve(queue_size_*21 + 100);
+        }
 
-  ~BlockBasedTableIteratorSBC() {}
+  ~BlockBasedTableIteratorSBC() {
+    aligned_buf_.reset();
+  }
 
   void Seek(const Slice& target) override;
   void SeekToFirst() override;
@@ -76,14 +85,10 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   }
   Slice key() const override {
     assert(Valid());
-    if (is_at_first_key_from_index_) {
-      return index_iter_->value().first_internal_key;
+    if (!kv_queue_.empty()) {
+      return kv_queue_.front().first;
     } else {
-      if (!kv_queue_.empty()) {
-        return kv_queue_.front().k;
-      } else {
-        return block_iter_.key();
-      }
+      return block_iter_.key();
     }
   }
   Slice user_key() const override {
@@ -91,25 +96,24 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
     if (is_at_first_key_from_index_) {
       return ExtractUserKey(index_iter_->value().first_internal_key);
     } else {
-      return ExtractUserKey(kv_queue_.front().k);
+      return ExtractUserKey(key());
     }
   }
   bool PrepareValue() override {
     assert(Valid());
 
-    if (!is_at_first_key_from_index_) {
-      return true;
-    }
-
-    return const_cast<BlockBasedTableIteratorSBC*>(this)
-        ->MaterializeCurrentBlock();
+    return !is_at_first_key_from_index_;
   }
   Slice value() const override {
     // PrepareValue() must have been called.
     assert(!is_at_first_key_from_index_);
     assert(Valid());
 
-    return kv_queue_.front().v;
+    if (!kv_queue_.empty()) {
+      return kv_queue_.front().second;
+    } else {
+      return block_iter_.value();
+    }
   }
   Status status() const override {
     // Prefix index set status to NotFound when the prefix does not exist
@@ -161,7 +165,9 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         block_iter_.DelegateCleanupsTo(pinned_iters_mgr_);
       }
       block_iter_.Invalidate(Status::OK());
+      delete block_;
       block_iter_points_to_real_block_ = false;
+      // std::cout << "ResetBlock: " << index_iter_->value().handle.offset() << "\n";
     }
     block_upper_bound_check_ = BlockUpperBound::kUnknown;
   }
@@ -236,7 +242,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   const InternalKeyComparator& icomp_;
   UserComparatorWrapper user_comparator_;
   PinnedIteratorsManager* pinned_iters_mgr_;
-  SBCDataBlockIter block_iter_;
+  DataBlockIter block_iter_;
   const SliceTransform* prefix_extractor_;
   uint64_t prev_block_offset_ = std::numeric_limits<uint64_t>::max();
   BlockCacheLookupContext lookup_context_;
@@ -263,23 +269,26 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
 
   bool from_comp_sst_ = false;
 
-  struct KVPair {
-    Slice k;
-    Slice v;
-  };
-  std::queue<KVPair> kv_queue_;
+  std::queue<std::pair<Slice, Slice>> kv_queue_;
+  size_t queue_size_;
+  std::string key_buf_;
+  Slice data_block_;
+  size_t block_start_offset_;  // 这是读到aligned_buf_里第一个block在文件里的偏移地址
+  const char* scratch_ = nullptr;
+  AlignedBuf aligned_buf_;   // 所有block的数据，加上block_start_offset_才是在文件里的真实偏移
+  Block* block_ = nullptr;
 
   void LoadKVFromBlock();
+
+  void FillKVQueue();
 
   // If `target` is null, seek to first.
   void SeekImpl(const Slice* target, bool async_prefetch);
 
   void InitDataBlock();
   void AsyncInitDataBlock(bool is_first_pass);
-  bool MaterializeCurrentBlock();
   void FindKeyForward();
   void FindBlockForward();
-  void FindKeyBackward();
   void CheckOutOfBound();
 
   // Check if data block is fully within iterate_upper_bound.

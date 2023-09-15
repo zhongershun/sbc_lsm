@@ -1311,6 +1311,45 @@ void TestMergeSortPriority(size_t data_size, size_t value_size, size_t file_num)
     << " Write dur: " << end - sort_end << " us\n\n";
 }
 
+
+void TestVectorQueue() {
+  struct KVPair {
+    Slice k;
+    Slice v;
+  };
+
+  std::vector<KVPair> queue_vector;
+  std::queue<KVPair> queue;
+
+  queue_vector.reserve(1024);
+
+  size_t push_num = 1000;
+
+  auto start = GetUnixTimeUs();
+
+  for (size_t i = 0; i < push_num; i++)
+  {
+    Slice a, b;
+    queue_vector.push_back({a, b});
+  }
+
+  auto mid = GetUnixTimeUs();
+
+  for (size_t i = 0; i < push_num; i++)
+  {
+    Slice a, b;
+    queue.push({a, b});
+  }
+
+  auto end = GetUnixTimeUs();
+
+
+  std::cout << "Key count: " << push_num << "\n"
+    << " Vector dur: " << mid - start << " us\n"
+    << " Queue dur: " << end - mid << " us\n";
+
+}
+
 }
 
 int main(int argc, char **argv) {
@@ -1323,10 +1362,12 @@ int main(int argc, char **argv) {
   //   io_num = std::stoi(argv[1]);
   // }
   
-  for (size_t v_size = 64; v_size <= 4096; v_size<<=2)
-  {
-    ROCKSDB_NAMESPACE::TestMergeSort(1ll << 30, v_size, 20);
-  }
+  // for (size_t v_size = 64; v_size <= 4096; v_size<<=2)
+  // {
+  //   ROCKSDB_NAMESPACE::TestMergeSort(1ll << 30, v_size, 20);
+  // }
+
+  ROCKSDB_NAMESPACE::TestVectorQueue();
   
   return 0;
 }

@@ -784,6 +784,26 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
     use_sbc_iter_ = false;
   }
 
+  void UpdateKey() {
+    key_buf_.Clear();
+    if (!Valid()) {
+      return;
+    }
+    if (raw_key_.IsUserKey()) {
+      assert(global_seqno_ == kDisableGlobalSequenceNumber);
+      key_ = raw_key_.GetUserKey();
+      key_pinned_ = raw_key_.IsKeyPinned();
+    } else if (global_seqno_ == kDisableGlobalSequenceNumber) {
+      key_ = raw_key_.GetInternalKey();
+      key_pinned_ = raw_key_.IsKeyPinned();
+    } else {
+      key_buf_.SetInternalKey(raw_key_.GetUserKey(), global_seqno_,
+                              ExtractValueType(raw_key_.GetInternalKey()));
+      key_ = key_buf_.GetInternalKey();
+      key_pinned_ = false;
+    }
+  }
+
   void UseSBCIter(bool use) {
     use_sbc_iter_ = use;
   }
@@ -795,8 +815,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
   }
 
   void SeekToLast() override {
-    SeekToLastImpl();
-    UpdateKey();
+    abort();
   }
 
   void Seek(const Slice& target) override {
@@ -806,8 +825,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
   }
 
   void SeekForPrev(const Slice& target) override {
-    SeekForPrevImpl(target);
-    UpdateKey();
+    abort();
   }
 
   void Next() override {

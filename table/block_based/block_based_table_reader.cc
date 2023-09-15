@@ -2078,8 +2078,9 @@ InternalIterator* BlockBasedTable::NewIterator(
         need_upper_bound_check, prefix_extractor, caller,
         compaction_readahead_size, allow_unprepared_value);
   } else {
-    auto* mem = arena->AllocateAligned(sizeof(BlockBasedTableIterator));
+    char* mem = nullptr;
     if(read_options.use_sbc_iter) {
+      mem = arena->AllocateAligned(sizeof(BlockBasedTableIteratorSBC));
       return new (mem) BlockBasedTableIteratorSBC(
         this, read_options, rep_->internal_comparator, std::move(index_iter),
         !skip_filters && !read_options.total_order_seek &&
@@ -2087,6 +2088,7 @@ InternalIterator* BlockBasedTable::NewIterator(
         need_upper_bound_check, prefix_extractor, caller,
         compaction_readahead_size, allow_unprepared_value);
     }
+    mem = arena->AllocateAligned(sizeof(BlockBasedTableIterator));
     return new (mem) BlockBasedTableIterator(
         this, read_options, rep_->internal_comparator, std::move(index_iter),
         !skip_filters && !read_options.total_order_seek &&

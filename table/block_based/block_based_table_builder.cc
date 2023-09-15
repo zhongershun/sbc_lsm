@@ -1255,10 +1255,10 @@ void BlockBasedTableBuilder::CompressAndVerifyBlock(
 }
 
 void BlockBasedTableBuilder::DisplayKeyRange() const {
-  std::cout << "FirstKey: " << rep_->first_key.size() << " "<< rep_->first_key << " " 
+  std::cout << "FirstKey: " << rep_->first_key.size() << " "<< Slice(rep_->first_key.c_str(), rep_->first_key.size()-8).ToString() << " " 
             << rep_->first_key_start_block_offset << " "
             << rep_->first_key_start_offset_in_block << "\n"
-            << "LastKey: " << rep_->last_key.size() << " " << rep_->last_key << " "
+            << "LastKey: " << rep_->last_key.size() << " " << Slice(rep_->last_key.c_str(), rep_->last_key.size()-8).ToString() << " "
             << rep_->last_key_block_offset << " "
             << rep_->last_key_offset_in_block << "\n";
 };

@@ -55,16 +55,17 @@ DEFINE_int32(workloads, 10, "");
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
-DEFINE_bool(create_new_db, true, "");
+DEFINE_bool(create_new_db, false, "");
 DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "SBC", "Scan, SBC, Compaction");
+DEFINE_string(operation, "Scan", "Scan, SBC, Compaction");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_bool(fast_scan, true, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -1622,7 +1623,11 @@ void TestScanSBCCompaction() {
     }
     assert(s.ok());
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
-    auto iter = db_->NewIterator(ReadOptions());
+    auto read_opt = ReadOptions();
+    read_opt.use_sbc_iter = FLAGS_fast_scan;
+    // read_opt.readahead_size = 2 << 20;
+
+    auto iter = db_->NewIterator(read_opt);
     auto start_ = std::chrono::system_clock::now();
     uint64_t key_cnt = 0;
     iter->SeekToFirst();

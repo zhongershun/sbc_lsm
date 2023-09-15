@@ -112,6 +112,47 @@ TBlockIter* BlockBasedTable::NewDataBlockIterator(
   return iter;
 }
 
+template <typename TBlockIter>
+TBlockIter* BlockBasedTable::NewDataBlockIteratorFromBuffer(
+    const ReadOptions& ro, const BlockHandle& handle, TBlockIter* input_iter,
+    BlockType block_type, GetContext* get_context,
+    BlockCacheLookupContext* lookup_context,
+    FilePrefetchBuffer* prefetch_buffer, bool for_compaction, bool async_read,
+    Status& s, const char *buff, Block *&ret_block) const {
+  PERF_TIMER_GUARD(new_table_block_iter_nanos);
+
+  TBlockIter* iter = input_iter != nullptr ? input_iter : new TBlockIter;
+  if (!s.ok()) {
+    iter->Invalidate(s);
+    return iter;
+  }
+
+  BlockContents contents(Slice(buff, handle.size()));
+  const size_t read_amp_bytes_per_bit =
+      block_type == BlockType::kData
+          ? rep_->table_options.read_amp_bytes_per_bit
+          : 0;
+
+  CachableEntry<Block> block;
+  Block* b = new Block(std::move(contents), read_amp_bytes_per_bit, rep_->ioptions.statistics.get());
+  block.SetUnownedValue(b);
+  ret_block = b;
+
+  if (!s.ok()) {
+    assert(block.IsEmpty());
+    delete b;
+    iter->Invalidate(s);
+    return iter;
+  }
+  assert(block.GetValue() != nullptr);
+  const bool block_contents_pinned =
+      block.IsCached() ||
+      (!block.GetValue()->own_bytes() && rep_->immortal_table);
+  iter = InitBlockIterator<TBlockIter>(rep_, block.GetValue(), block_type, iter,
+                                       block_contents_pinned);
+  return iter;
+}
+
 // Convert an uncompressed data block (i.e CachableEntry<Block>)
 // into an iterator over the contents of the corresponding block.
 // If input_iter is null, new a iterator

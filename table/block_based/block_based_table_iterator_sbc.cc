@@ -8,6 +8,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "table/block_based/block_based_table_iterator_sbc.h"
 #include <iostream>
+#include "block_based_table_iterator_sbc.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -51,27 +52,6 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   }
 
   bool need_seek_index = true;
-  // if (block_iter_points_to_real_block_ && block_iter_.Valid()) {
-  //   // Reseek.
-  //   prev_block_offset_ = index_iter_->value().handle.offset();
-
-  //   if (target) {
-  //     // We can avoid an index seek if:
-  //     // 1. The new seek key is larger than the current key
-  //     // 2. The new seek key is within the upper bound of the block
-  //     // Since we don't necessarily know the internal key for either
-  //     // the current key or the upper bound, we check user keys and
-  //     // exclude the equality case. Considering internal keys can
-  //     // improve for the boundary cases, but it would complicate the
-  //     // code.
-  //     if (user_comparator_.Compare(ExtractUserKey(*target),
-  //                                  block_iter_.user_key()) > 0 &&
-  //         user_comparator_.Compare(ExtractUserKey(*target),
-  //                                  index_iter_->user_key()) < 0) {
-  //       need_seek_index = false;
-  //     }
-  //   }
-  // }
 
   if (need_seek_index) {
     if (target) {
@@ -89,18 +69,17 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   IndexValue v = index_iter_->value();
   const bool same_block = block_iter_points_to_real_block_ &&
                           v.handle.offset() == prev_block_offset_;
+  
+  // 一次读一堆数据上来
+  IOOptions opts;
+  char scratch;
+  table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
+  block_start_offset_ = table_->get_rep()->first_key_start_block_offset;
+  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block;
+  table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_, &scratch, &aligned_buf_, read_options_.rate_limiter_priority);
+  scratch_ = data_block_.data_;
 
-  if (!v.first_internal_key.empty() && !same_block &&
-      (!target || icomp_.Compare(*target, v.first_internal_key) <= 0) &&
-      allow_unprepared_value_) {
-    // Index contains the first key of the block, and it's >= target.
-    // We can defer reading the block.
-    is_at_first_key_from_index_ = true;
-    // ResetDataIter() will invalidate block_iter_. Thus, there is no need to
-    // call CheckDataBlockWithinUpperBound() to check for iterate_upper_bound
-    // as that will be done later when the data block is actually read.
-    ResetDataIter();
-  } else {
+  {
     // Need to use the data block.
     if (!same_block) {
       if (read_options_.async_io && async_prefetch) {
@@ -126,17 +105,14 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
       CheckDataBlockWithinUpperBound();
     }
 
-    block_iter_.UseSBCIter(true);
     if (target) {
       block_iter_.Seek(*target);
     } else {
       block_iter_.SeekToFirst();
     }
-    if(block_iter_.Valid()) {
-      LoadKVFromBlock();
-    } else {
-      FindKeyForward();
-    }
+    FindKeyForward();
+    key_buf_.clear();
+    LoadKVFromBlock();
   }
 
   CheckOutOfBound();
@@ -148,23 +124,35 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
 
 
 void BlockBasedTableIteratorSBC::Next() {
-  if (is_at_first_key_from_index_ && !MaterializeCurrentBlock()) {
-    return;
-  }
-  assert(block_iter_points_to_real_block_);
+  // assert(block_iter_points_to_real_block_);
   // block_iter_.Next();
+  // FindKeyForward();
+  // CheckOutOfBound();
+
   kv_queue_.pop();
-  FindKeyForward();
-  CheckOutOfBound();
+  if(kv_queue_.empty()) {
+    FillKVQueue();
+  }
 }
 
 // 这会让block_iter_.Valid() = false
-void BlockBasedTableIteratorSBC::LoadKVFromBlock() {
-  while (block_iter_.Valid()) {
-    Slice key;
-    KVPair kv_p = {block_iter_.KeyForKVBuff(), block_iter_.value()};
-    kv_queue_.push(kv_p);
+inline void BlockBasedTableIteratorSBC::LoadKVFromBlock() {
+  if(block_iter_.Valid()) {
+    Slice key = block_iter_.key();
+    auto pos = key_buf_.size();
+    key_buf_.append(key.data(), key.size());
+    kv_queue_.push(std::make_pair(Slice(key_buf_.c_str() + pos, key.size()), block_iter_.value()));
     block_iter_.Next();
+  } else {
+    FindKeyForward();
+  }
+  CheckOutOfBound();
+}
+
+void BlockBasedTableIteratorSBC::FillKVQueue() {
+  key_buf_.clear();
+  while (block_iter_points_to_real_block_ && kv_queue_.size() < queue_size_) {
+    LoadKVFromBlock();
   }
 }
 
@@ -207,11 +195,13 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
         rep, data_block_handle, read_options_.readahead_size, is_for_compaction,
         /*no_sequential_checking=*/false, read_options_.rate_limiter_priority);
     Status s;
-    table_->NewDataBlockIterator<SBCDataBlockIter>(
+    table_->NewDataBlockIteratorFromBuffer<DataBlockIter>(
         read_options_, data_block_handle, &block_iter_, BlockType::kData,
         /*get_context=*/nullptr, &lookup_context_,
         block_prefetcher_.prefetch_buffer(),
-        /*for_compaction=*/is_for_compaction, /*async_read=*/false, s);
+        /*for_compaction=*/is_for_compaction, /*async_read=*/false, s, 
+        scratch_ + data_block_handle.offset() - block_start_offset_,
+        block_);
     // The last data block
     if(data_block_handle.offset() == rep->last_key_block_offset) {
       block_iter_.UpdateEndOffset(rep->last_key_offset_in_block);
@@ -249,7 +239,7 @@ void BlockBasedTableIteratorSBC::AsyncInitDataBlock(bool is_first_pass) {
           read_options_.rate_limiter_priority);
 
       Status s;
-      table_->NewDataBlockIterator<SBCDataBlockIter>(
+      table_->NewDataBlockIterator<DataBlockIter>(
           read_options_, data_block_handle, &block_iter_, BlockType::kData,
           /*get_context=*/nullptr, &lookup_context_,
           block_prefetcher_.prefetch_buffer(),
@@ -264,7 +254,7 @@ void BlockBasedTableIteratorSBC::AsyncInitDataBlock(bool is_first_pass) {
     // Second pass will call the Poll to get the data block which has been
     // requested asynchronously.
     Status s;
-    table_->NewDataBlockIterator<SBCDataBlockIter>(
+    table_->NewDataBlockIterator<DataBlockIter>(
         read_options_, data_block_handle, &block_iter_, BlockType::kData,
         /*get_context=*/nullptr, &lookup_context_,
         block_prefetcher_.prefetch_buffer(),
@@ -275,41 +265,13 @@ void BlockBasedTableIteratorSBC::AsyncInitDataBlock(bool is_first_pass) {
   async_read_in_progress_ = false;
 }
 
-bool BlockBasedTableIteratorSBC::MaterializeCurrentBlock() {
-  assert(is_at_first_key_from_index_);
-  assert(!block_iter_points_to_real_block_);
-  assert(index_iter_->Valid());
-
-  is_at_first_key_from_index_ = false;
-  InitDataBlock();
-  assert(block_iter_points_to_real_block_);
-
-  if (!block_iter_.status().ok()) {
-    return false;
-  }
-  block_iter_.UseSBCIter(true);
-  block_iter_.SeekToFirst();
-
-  if (!block_iter_.Valid() ||
-      icomp_.Compare(block_iter_.key(),
-                     index_iter_->value().first_internal_key) != 0) {
-    block_iter_.Invalidate(Status::Corruption(
-        "first key in index doesn't match first key in block"));
-    return false;
-  }
-
-  LoadKVFromBlock();
-
-  return true;
-}
-
 void BlockBasedTableIteratorSBC::FindKeyForward() {
   // This method's code is kept short to make it likely to be inlined.
 
   assert(!is_out_of_bound_);
   assert(block_iter_points_to_real_block_);
 
-  if (!block_iter_.Valid() && kv_queue_.empty()) {
+  if (!block_iter_.Valid()) {
     // This is the only call site of FindBlockForward(), but it's extracted into
     // a separate method to keep FindKeyForward() short and likely to be
     // inlined. When transitioning to a different block, we call
@@ -358,21 +320,10 @@ void BlockBasedTableIteratorSBC::FindBlockForward() {
       return;
     }
 
-    IndexValue v = index_iter_->value();
-
-    if (!v.first_internal_key.empty() && allow_unprepared_value_) {
-      // Index contains the first key of the block. Defer reading the block.
-      is_at_first_key_from_index_ = true;
-      return;
-    }
-
     InitDataBlock();
-    block_iter_.UseSBCIter(true);
     block_iter_.SeekToFirst();
   } while (!block_iter_.Valid());
-  LoadKVFromBlock();
 }
-
 
 void BlockBasedTableIteratorSBC::CheckOutOfBound() {
   if (read_options_.iterate_upper_bound != nullptr &&
