@@ -120,6 +120,10 @@ TBlockIter* BlockBasedTable::NewDataBlockIteratorFromBuffer(
     FilePrefetchBuffer* prefetch_buffer, bool for_compaction, bool async_read,
     Status& s, const char *buff, Block *&ret_block) const {
   PERF_TIMER_GUARD(new_table_block_iter_nanos);
+  // if(handle.offset() == 28449737) {
+  //   std::cout << "Init last block: " << handle.offset() << " " << handle.size() << " Status: "
+  //   << s.ToString() << "\n";
+  // }
 
   TBlockIter* iter = input_iter != nullptr ? input_iter : new TBlockIter;
   if (!s.ok()) {

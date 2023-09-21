@@ -705,7 +705,7 @@ ReadOptions::ReadOptions()
       adaptive_readahead(false),
       async_io(false),
       optimize_multiget_for_io(true),
-      use_sbc_iter(false) {}
+      fast_scan(false) {}
 
 ReadOptions::ReadOptions(bool cksum, bool cache)
     : snapshot(nullptr),
@@ -732,6 +732,6 @@ ReadOptions::ReadOptions(bool cksum, bool cache)
       adaptive_readahead(false),
       async_io(false),
       optimize_multiget_for_io(true),
-      use_sbc_iter(false) {}
+      fast_scan(false) {}
 
 }  // namespace ROCKSDB_NAMESPACE

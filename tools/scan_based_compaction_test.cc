@@ -40,6 +40,7 @@
 #include "unistd.h"
 #include "util/random.h"
 #include "util/io_info.h"
+#include "sys/mman.h"
 
 DEFINE_int32(value_size, 1024, "");
 DEFINE_bool(use_sync, false, "");
@@ -55,17 +56,18 @@ DEFINE_int32(workloads, 10, "");
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
-DEFINE_bool(create_new_db, false, "");
+DEFINE_bool(create_new_db, true, "");
 DEFINE_int32(distribution, 0, "0: uniform, 1: zipfian");
 DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "Scan", "Scan, SBC, Compaction");
+DEFINE_string(operation, "Compaction", "Scan, SBC, Compaction, ScanWithCache");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
-DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_int32(use_sbc_buffer, 0, "0 disable, 1 KVBuffer, 2 File buffer, 3 Put compaction result in buffer");
 DEFINE_bool(fast_scan, true, "");
+DEFINE_bool(compaction_with_fast_scan, false, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -1601,13 +1603,6 @@ void TestScanSBCCompaction() {
 
   options.statistics = rocksdb::CreateDBStatistics();
 
-  if(FLAGS_cache_size > 0) {
-    std::shared_ptr<Cache> cache = NewLRUCache(FLAGS_cache_size);
-    BlockBasedTableOptions table_options;
-    table_options.block_cache = cache;
-    options.table_factory.reset(NewBlockBasedTableFactory(table_options));
-  }
-
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   // 绑定CPU核心
@@ -1615,6 +1610,11 @@ void TestScanSBCCompaction() {
     CPU_SET(i, &cpuset);
   }
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
+  if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
+    perror("mlockall failed");
+    return;
+  }
 
   auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, int idx, std::vector<std::string> *key_all = nullptr) {
     auto s = DB::Open(options_, DBPath_, &db_);
@@ -1627,6 +1627,10 @@ void TestScanSBCCompaction() {
     read_opt.use_sbc_iter = FLAGS_fast_scan;
     // read_opt.readahead_size = 2 << 20;
 
+    auto hist_next = std::make_shared<HistogramImpl>();
+
+    options_.statistics.reset();
+
     auto iter = db_->NewIterator(read_opt);
     auto start_ = std::chrono::system_clock::now();
     uint64_t key_cnt = 0;
@@ -1634,9 +1638,14 @@ void TestScanSBCCompaction() {
     while(iter->Valid()) {
       if(key_all) {
         auto k = iter->key().ToString();
-        key_all->emplace_back(k);
+        // key_all->emplace_back(k);
       }
+      auto start_next = std::chrono::system_clock::now();
       iter->Next();
+      auto end_next = std::chrono::system_clock::now();
+      key_cnt++;
+      hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
+      
       key_cnt++;
     }
     auto end_ = std::chrono::system_clock::now();
@@ -1645,7 +1654,8 @@ void TestScanSBCCompaction() {
     delete db_;
     std::cout << "Scan" << idx << " duration: " 
       << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-      << ", Key cnt:" << key_cnt << "\n";
+      << ", Key cnt:" << key_cnt << "\n"
+      << "Next\n" << hist_next->ToString() << "\n";
   };
 
   auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end, bool comp_l0 = false) {
@@ -1695,6 +1705,7 @@ void TestScanSBCCompaction() {
 
   auto CompactionRange = [](DB* db_, std::string DBPath_, Options options_) {
     options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
+    options_.compaction_with_fast_scan = FLAGS_compaction_with_fast_scan;
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 
@@ -1709,6 +1720,62 @@ void TestScanSBCCompaction() {
       << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
       << "\n";
     delete db_;
+  };
+
+  auto ScanWithCache = [](DB* db_, std::string DBPath_, Options options_, int idx, std::vector<std::string> *key_all = nullptr) {
+    {
+      std::shared_ptr<Cache> cache = NewLRUCache(2ll << 30);
+      BlockBasedTableOptions table_options;
+      table_options.block_cache = cache;
+      options_.table_factory.reset(NewBlockBasedTableFactory(table_options));
+      // options_.use_direct_reads = false;
+    }
+    auto s = DB::Open(options_, DBPath_, &db_);
+    if(s != Status::OK()) {
+      std::cout << s.ToString() << "\n";
+    }
+    assert(s.ok());
+    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
+
+    auto read_opt = ReadOptions();
+
+    auto iter = db_->NewIterator(read_opt);
+    auto start_ = std::chrono::system_clock::now();
+    uint64_t key_cnt = 0;
+    iter->SeekToFirst();
+    while(iter->Valid()) {
+      if(key_all) {
+        auto k = iter->key().ToString();
+        key_all->emplace_back(k);
+      }
+      iter->Next();
+      key_cnt++;
+    }
+    auto end_ = std::chrono::system_clock::now();
+
+    std::cout << "ScanWithCache: " << idx 
+      << "\nLoad data duration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n";
+
+    start_ = std::chrono::system_clock::now();
+    key_cnt = 0;
+    iter->SeekToFirst();
+    while(iter->Valid()) {
+      if(key_all) {
+        auto k = iter->key().ToString();
+        key_all->emplace_back(k);
+      }
+      iter->Next();
+      key_cnt++;
+    }
+    end_ = std::chrono::system_clock::now();
+    static_cast<DBImpl*>(db_)->WaitForCompact(1);
+    delete iter;
+    delete db_;
+
+    std::cout << "Scan with cache duration: " 
+      << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n";
   };
 
   Env *env = Env::Default();
@@ -1779,6 +1846,8 @@ void TestScanSBCCompaction() {
                              options.statistics->getTickerCount(COMPACTION_IO_WRITE) / 1000 + 
                              options.statistics->getTickerCount(COMPACTION_CPU_TIME) 
               << "us\n";
+  } else if(FLAGS_operation == "ScanWithCache") {
+    ScanWithCache(db, DBPath, options, 2);
   } else {
 
   }
@@ -1805,6 +1874,8 @@ void TestScanSBCCompaction() {
             << " us, CPU: " << cpu_dur / FLAGS_read_count
             << " us, Duration: " << dur / FLAGS_read_count
             << "us\n";
+  
+  // ScanDB(db, DBPath, options, 2);
 }
 
 }  // namespace ROCKSDB_NAMESPACE

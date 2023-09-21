@@ -1131,6 +1131,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   // (b) CompactionFilter::Decision::kRemoveAndSkipUntil.
   read_options.total_order_seek = true;
 
+  read_options.fast_scan = db_options_.compaction_with_fast_scan;
+
   // Remove the timestamps from boundaries because boundaries created in
   // GenSubcompactionBoundaries doesn't strip away the timestamp.
   size_t ts_sz = cfd->user_comparator()->timestamp_size();
@@ -1820,7 +1822,7 @@ Status CompactionJob::SBCSubmitFinishCompactionOutputFile(
   //                                         db_options_.use_fsync);
   if(s.ok()) {
     files_need_flush_.push(new WriteFileData(meta, std::move(outputs.GetFileWriter()), current_entries, &outputs.current_output()));
-    // cv_kv_buf_.Signal();
+    cv_kv_buf_.Signal();
   }
 
   outputs.ResetBuilder();

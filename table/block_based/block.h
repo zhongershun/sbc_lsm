@@ -10,7 +10,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -26,6 +26,47 @@
 #include "table/internal_iterator.h"
 #include "test_util/sync_point.h"
 #include "util/random.h"
+
+
+inline void prefetch_64(const void* ptr) {
+#ifdef NOPREFETCH
+  (void)ptr;
+#else
+  typedef struct { char x[64]; } cacheline_t;
+  asm volatile("prefetcht0 %0" : : "m"(*(const cacheline_t*)ptr));
+#endif
+}
+
+inline void prefetch_256(const void* ptr) {
+#ifdef NOPREFETCH
+  (void)ptr;
+#else
+  typedef struct { char x[256]; } cacheline_t;
+  __builtin_prefetch(((const cacheline_t*)ptr), 0, 1);
+#endif
+}
+
+inline void prefetch_512(const void* ptr) {
+#ifdef NOPREFETCH
+  (void)ptr;
+#else
+  typedef struct { char x[512]; } cacheline_t;
+  __builtin_prefetch(((const cacheline_t*)ptr), 0, 1);
+  // asm volatile("prefetcht0 %0" : : "m"(*(const cacheline_t*)ptr));
+#endif
+}
+
+inline void prefetch_1024(const void* ptr) {
+  typedef struct { char x[1024]; } cacheline_t;
+  __builtin_prefetch(((const cacheline_t*)ptr), 0, 1);
+  // asm volatile("prefetcht0 %0" : : "m"(*(const cacheline_t*)ptr));
+}
+
+inline void prefetch_2048(const void* ptr) {
+  typedef struct { char x[2048]; } cacheline_t;
+  __builtin_prefetch(((const cacheline_t*)ptr), 0, 1);
+  // asm volatile("prefetcht0 %0" : : "m"(*(const cacheline_t*)ptr));
+}
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -525,6 +566,10 @@ class DataBlockIter final : public BlockIter<Slice> {
     data_block_hash_index_ = data_block_hash_index;
   }
 
+  inline void PrefetchNextKey() {
+    prefetch_64(value_.data_);
+  }
+
   Slice value() const override {
     assert(Valid());
     if (read_amp_bitmap_ && current_ < end_ &&
@@ -551,6 +596,7 @@ class DataBlockIter final : public BlockIter<Slice> {
 
   void Invalidate(const Status& s) override {
     BlockIter::Invalidate(s);
+    // std::cout << "Invalidate block\n";
     // Clear prev entries cache.
     prev_entries_keys_buff_.clear();
     prev_entries_.clear();
@@ -781,7 +827,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
     last_bitmap_offset_ = current_ + 1;
     data_block_hash_index_ = data_block_hash_index;
     sbc_key_buf_.reserve(1024);
-    use_sbc_iter_ = false;
+    fast_scan_ = false;
   }
 
   void UpdateKey() {
@@ -805,7 +851,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
   }
 
   void UseSBCIter(bool use) {
-    use_sbc_iter_ = use;
+    fast_scan_ = use;
   }
 
   void SeekToFirst() override  {
@@ -839,7 +885,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
   }
 
   void SaveKey() {
-    if(Valid() && use_sbc_iter_) {
+    if(Valid() && fast_scan_) {
       auto k = key();
       auto pos = sbc_key_buf_.size();
       sbc_key_buf_.append(k.data(), k.size());
@@ -928,7 +974,7 @@ class SBCDataBlockIter final : public BlockIter<Slice> {
   std::vector<CachedPrevEntry> prev_entries_;
   int32_t prev_entries_idx_ = -1;
   std::string sbc_key_buf_;
-  bool use_sbc_iter_;
+  bool fast_scan_;
   Slice key_kv_buf_;
 
   DataBlockHashIndex* data_block_hash_index_;

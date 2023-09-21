@@ -20,6 +20,46 @@ namespace ROCKSDB_NAMESPACE {
 
 constexpr size_t kKVBufferSize = 1024;
 
+class KVQueue {
+public:
+  KVQueue():start_(0), end_(0){}
+
+  bool empty() const {
+    return start_ == end_;
+  }
+
+  size_t size() const {
+    return end_ - start_;
+  }
+
+  inline const std::pair<Slice, Slice>& front() const {
+    if(start_ < end_)
+      return kv_queue_[start_];
+    return kv_queue_[kKVBufferSize];
+  }
+
+  inline bool push(std::pair<rocksdb::Slice, rocksdb::Slice> &&kv) {
+    if(end_ < kKVBufferSize) {
+      kv_queue_[end_] = kv;
+      end_++;
+      return true;
+    }
+    return false;
+  }
+
+  inline void pop() {
+    start_++;
+    if(start_ >= end_) {
+      start_ = end_ = 0;
+    }
+  }
+
+private:
+  std::pair<Slice, Slice> kv_queue_[kKVBufferSize+1];
+  size_t start_;
+  size_t end_;
+};
+
 class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   // compaction_readahead_size: its value will only be used if for_compaction =
   // true
@@ -167,7 +207,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
       block_iter_.Invalidate(Status::OK());
       delete block_;
       block_iter_points_to_real_block_ = false;
-      // std::cout << "ResetBlock: " << index_iter_->value().handle.offset() << "\n";
+      // std::cout << "ResetBlock: " << index_iter_->value().handle.offset() << "\n\n";
     }
     block_upper_bound_check_ = BlockUpperBound::kUnknown;
   }
@@ -269,7 +309,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
 
   bool from_comp_sst_ = false;
 
-  std::queue<std::pair<Slice, Slice>> kv_queue_;
+  KVQueue kv_queue_;
   size_t queue_size_;
   std::string key_buf_;
   Slice data_block_;

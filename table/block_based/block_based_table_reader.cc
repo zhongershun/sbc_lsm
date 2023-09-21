@@ -2063,7 +2063,7 @@ InternalIterator* BlockBasedTable::NewIterator(
           rep_->index_type == BlockBasedTableOptions::kHashSearch,
       /*input_iter=*/nullptr, /*get_context=*/nullptr, &lookup_context));
   if (arena == nullptr) {
-    if(read_options.use_sbc_iter) {
+    if(read_options.fast_scan) {
       return new BlockBasedTableIteratorSBC(
         this, read_options, rep_->internal_comparator, std::move(index_iter),
         !skip_filters && !read_options.total_order_seek &&
@@ -2079,7 +2079,7 @@ InternalIterator* BlockBasedTable::NewIterator(
         compaction_readahead_size, allow_unprepared_value);
   } else {
     char* mem = nullptr;
-    if(read_options.use_sbc_iter) {
+    if(read_options.fast_scan) {
       mem = arena->AllocateAligned(sizeof(BlockBasedTableIteratorSBC));
       return new (mem) BlockBasedTableIteratorSBC(
         this, read_options, rep_->internal_comparator, std::move(index_iter),

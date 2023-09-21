@@ -1405,6 +1405,8 @@ struct DBOptions {
   bool enable_sbc = false;
 
   int use_sbc_buffer = 0;
+
+  bool compaction_with_fast_scan = false;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)
@@ -1712,7 +1714,7 @@ struct ReadOptions {
   bool optimize_multiget_for_io;
 
   // Default: false
-  bool use_sbc_iter;
+  bool fast_scan;
 
   ReadOptions();
   ReadOptions(bool cksum, bool cache);

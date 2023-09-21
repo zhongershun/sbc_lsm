@@ -52,7 +52,7 @@ DEFINE_int32(core_num, 2, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
 DEFINE_int32(client_num_write, 1, "");
-DEFINE_int32(client_num_scan, 1, "");
+DEFINE_int32(client_num_scan, 0, "");
 DEFINE_int32(client_num_scan_base, 0, "");
 DEFINE_int64(op_count, 10000, "");
 DEFINE_int32(workloads, 2, ""); 
@@ -65,14 +65,16 @@ DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, false, "");
 DEFINE_bool(enable_sbc, true, "");
-DEFINE_int32(run_time, 200, "Unit: second");
+DEFINE_int32(run_time, 100, "Unit: second");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(level_multiplier, 2, "");
 DEFINE_bool(level_compaction_dynamic_level_bytes, false, "");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(l0_stalling_limit, 20, "");
 DEFINE_uint64(sbc_size, 1ll<<30, "");
-DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_int32(use_sbc_buffer, 2, "0 disable, 1 KVBuffer, 2 File buffer");
+DEFINE_bool(fast_scan, true, "");
+DEFINE_bool(compaction_with_fast_scan, true, "");
 
 
 #define UNUSED(v) ((void)(v))
@@ -781,6 +783,7 @@ void TestMixWorkloadWithDiffThread() {
   options.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
   options.enable_sbc = FLAGS_enable_sbc;
   options.use_sbc_buffer = FLAGS_use_sbc_buffer;
+  options.compaction_with_fast_scan = FLAGS_compaction_with_fast_scan;
   std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
@@ -1124,9 +1127,9 @@ void TestMixWorkloadWithDiffThread() {
   std::cout << "Read: " << hist_[kRead]->ToString() << "\n";
   std::cout << "Write: " << hist_[kWrite]->ToString() << "\n";
   std::cout << "Scan: " << hist_[kScan]->ToString() << "\n";
-  std::cout << "TailRead: " << hist_[kTailRead]->ToString() << "\n";
-  std::cout << "TailReadCPU: " << hist_[kTailReadCPU]->ToString() << "\n";
-  std::cout << "TailReadIO: " << hist_[kTailReadIO]->ToString() << "\n";
+  // std::cout << "TailRead: " << hist_[kTailRead]->ToString() << "\n";
+  // std::cout << "TailReadCPU: " << hist_[kTailReadCPU]->ToString() << "\n";
+  // std::cout << "TailReadIO: " << hist_[kTailReadIO]->ToString() << "\n";
 
   // 将读操作的记录输出到文件
   std::vector<std::vector<uint64_t>> read_op_all_;

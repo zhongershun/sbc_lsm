@@ -75,7 +75,7 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   char scratch;
   table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
   block_start_offset_ = table_->get_rep()->first_key_start_block_offset;
-  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block;
+  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block + 1024 - table_->get_rep()->first_key_start_block_offset;
   table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_, &scratch, &aligned_buf_, read_options_.rate_limiter_priority);
   scratch_ = data_block_.data_;
 
@@ -143,6 +143,7 @@ inline void BlockBasedTableIteratorSBC::LoadKVFromBlock() {
     key_buf_.append(key.data(), key.size());
     kv_queue_.push(std::make_pair(Slice(key_buf_.c_str() + pos, key.size()), block_iter_.value()));
     block_iter_.Next();
+    block_iter_.PrefetchNextKey();
   } else {
     FindKeyForward();
   }
@@ -183,6 +184,7 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
       ResetDataIter();
     }
     auto* rep = table_->get_rep();
+    prefetch_64(scratch_ + data_block_handle.offset() - block_start_offset_ + data_block_handle.size() - sizeof(uint32_t));
 
     bool is_for_compaction =
         lookup_context_.caller == TableReaderCaller::kCompaction;
@@ -195,6 +197,9 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
         rep, data_block_handle, read_options_.readahead_size, is_for_compaction,
         /*no_sequential_checking=*/false, read_options_.rate_limiter_priority);
     Status s;
+    // if(index_iter_->value().handle.offset() == 28449737) {
+    //   system("pause");
+    // }
     table_->NewDataBlockIteratorFromBuffer<DataBlockIter>(
         read_options_, data_block_handle, &block_iter_, BlockType::kData,
         /*get_context=*/nullptr, &lookup_context_,
@@ -207,6 +212,11 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
       block_iter_.UpdateEndOffset(rep->last_key_offset_in_block);
     }
     block_iter_points_to_real_block_ = true;
+    // std::cout << "InitBlock: " << index_iter_->value().handle.offset() << " "
+    //   << rep->last_key_block_offset << " " << rep->last_key_offset_in_block
+    //   << "\n";
+    
+    prefetch_64(scratch_ + data_block_handle.offset() - block_start_offset_);
     CheckDataBlockWithinUpperBound();
   }
 }
