@@ -75,9 +75,10 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   char scratch;
   table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
   block_start_offset_ = table_->get_rep()->first_key_start_block_offset;
-  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block + 1024 - table_->get_rep()->first_key_start_block_offset;
+  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block + 4096 - table_->get_rep()->first_key_start_block_offset;
   table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_, &scratch, &aligned_buf_, read_options_.rate_limiter_priority);
   scratch_ = data_block_.data_;
+  // std::cout << "LoadFile from: " << block_start_offset_ << " size: " << n;
 
   {
     // Need to use the data block.

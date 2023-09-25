@@ -1535,12 +1535,12 @@ Status CompactionJob::CreateSBCIterator(InternalIterator *input, SBCBuffer *sbc_
 Status CompactionJob::AddKeyValue() {
   assert(SBC_iter_.get());
   Status s = Status::OK();
-  uint64_t add_kv_buffer_end = 0;
+  // uint64_t add_kv_buffer_end = 0;
 
-  auto start = db_options_.clock->NowMicros();
+  // auto start = db_options_.clock->NowMicros();
   SBC_iter_->SBCNext();
 
-  auto sbc_next_end = db_options_.clock->NowMicros();
+  // auto sbc_next_end = db_options_.clock->NowMicros();
 
   SubcompactionState* sub_compact = &compact_->sub_compact_states[0];
   const CompactionFileOpenFunc open_file_func =
@@ -1555,7 +1555,7 @@ Status CompactionJob::AddKeyValue() {
       return in_stat;
     }
     s = sbc_key_value_buffer_->AddKeyValue(SBC_iter_->key(), SBC_iter_->value(), SBC_iter_->ikey());
-     add_kv_buffer_end = db_options_.clock->NowMicros();
+    //  add_kv_buffer_end = db_options_.clock->NowMicros();
     
     if(sbc_key_value_buffer_->size() > 20) {
       cv_kv_buf_.Signal();
@@ -1580,12 +1580,12 @@ Status CompactionJob::AddKeyValue() {
       };
     s = sub_compact->AddToOutput(*SBC_iter_, open_file_func, close_file_func);
   }
-  auto end = db_options_.clock->NowMicros();
+  // auto end = db_options_.clock->NowMicros();
 
-  RecordTimeToHistogram(db_options_.statistics.get(), SBC_NEXT_LAT, sbc_next_end - start);
-  RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_BUFFER_LAT, add_kv_buffer_end - sbc_next_end);
-  RecordTimeToHistogram(db_options_.statistics.get(), WAKEUP_WORKER_LAT, end - add_kv_buffer_end);
-  RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_LAT, end - start);
+  // RecordTimeToHistogram(db_options_.statistics.get(), SBC_NEXT_LAT, sbc_next_end - start);
+  // RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_BUFFER_LAT, add_kv_buffer_end - sbc_next_end);
+  // RecordTimeToHistogram(db_options_.statistics.get(), WAKEUP_WORKER_LAT, end - add_kv_buffer_end);
+  // RecordTimeToHistogram(db_options_.statistics.get(), ADD_KEY_VALUE_LAT, end - start);
 
   return s;
 }
@@ -2554,7 +2554,8 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
   }
   fo_copy.temperature = temperature;
   if(db_options_.use_sbc_buffer == 2 || db_options_.use_sbc_buffer == 3) {
-    fo_copy.writable_file_max_buffer_size = sub_compact->compaction->max_output_file_size() + (1ll<<20);
+    fo_copy.writable_file_max_buffer_size = 
+      sub_compact->compaction->max_output_file_size() + (1ll<<20);
   }
 
   Status s;

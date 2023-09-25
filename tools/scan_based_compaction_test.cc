@@ -62,10 +62,10 @@ DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "Compaction", "Scan, SBC, Compaction, ScanWithCache");
+DEFINE_string(operation, "SBC", "Scan, SBC, Compaction, ScanWithCache");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
-DEFINE_int32(use_sbc_buffer, 0, "0 disable, 1 KVBuffer, 2 File buffer, 3 Put compaction result in buffer");
+DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer, 3 Put compaction result in buffer");
 DEFINE_bool(fast_scan, true, "");
 DEFINE_bool(compaction_with_fast_scan, false, "");
 
@@ -1624,7 +1624,7 @@ void TestScanSBCCompaction() {
     assert(s.ok());
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
     auto read_opt = ReadOptions();
-    read_opt.use_sbc_iter = FLAGS_fast_scan;
+    read_opt.fast_scan = FLAGS_fast_scan;
     // read_opt.readahead_size = 2 << 20;
 
     auto hist_next = std::make_shared<HistogramImpl>();
@@ -1661,13 +1661,15 @@ void TestScanSBCCompaction() {
   auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end, bool comp_l0 = false) {
     options_.enable_sbc = true;
     options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
+    options_.compression_opts.parallel_threads = 1;
+
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
 
     auto hist_next = std::make_shared<HistogramImpl>();  
     
     auto sbc_read_opt = ReadOptions();
-    // sbc_read_opt.readahead_size = 2<<20;
+    sbc_read_opt.fast_scan = FLAGS_fast_scan;
     Iterator *iter = nullptr;
     if(comp_l0) {
       iter = db_->NewSBCIterator(sbc_read_opt, nullptr, nullptr);

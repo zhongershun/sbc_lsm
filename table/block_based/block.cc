@@ -1425,6 +1425,7 @@ Block::Block(BlockContents&& contents, size_t read_amp_bytes_per_bit,
           // The size is too small for NumRestarts() and therefore
           // restart_offset_ wrapped around.
           size_ = 0;
+          abort();
         }
         break;
       case BlockBasedTableOptions::kDataBlockBinaryAndHash:

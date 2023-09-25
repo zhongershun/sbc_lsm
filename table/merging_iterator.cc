@@ -1486,6 +1486,9 @@ void MergingIterator::SBCNext() {
   // For the heap modifications below to be correct, current_ must be the
   // current top of the heap.
   assert(current_ == CurrentForward());
+  if(current_ == nullptr) {
+    abort();
+  }
   // as the current points to the current record. move the iterator forward.
   current_->Next();
   if (current_->Valid()) {

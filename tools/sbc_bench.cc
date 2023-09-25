@@ -52,7 +52,7 @@ DEFINE_int32(core_num, 2, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int32(client_num_read, 0, "");
 DEFINE_int32(client_num_write, 1, "");
-DEFINE_int32(client_num_scan, 0, "");
+DEFINE_int32(client_num_scan, 1, "");
 DEFINE_int32(client_num_scan_base, 0, "");
 DEFINE_int64(op_count, 10000, "");
 DEFINE_int32(workloads, 2, ""); 
@@ -783,7 +783,7 @@ void TestMixWorkloadWithDiffThread() {
   options.max_bytes_for_level_multiplier = FLAGS_level_multiplier;
   options.enable_sbc = FLAGS_enable_sbc;
   options.use_sbc_buffer = FLAGS_use_sbc_buffer;
-  options.compaction_with_fast_scan = FLAGS_compaction_with_fast_scan;
+  options.compaction_with_fast_scan = FLAGS_fast_scan;
   std::atomic<bool> running = true;
   std::atomic<int64_t> op_count_ = 0;
   size_t op_count_list[100];
@@ -969,7 +969,8 @@ void TestMixWorkloadWithDiffThread() {
         const Slice scan_end_key(end);
         read_opt.iterate_lower_bound = &scan_start_key;
         read_opt.iterate_upper_bound = &scan_end_key;
-        read_opt.readahead_size = 2<<20;
+        read_opt.fast_scan = FLAGS_fast_scan;
+        // read_opt.readahead_size = 2<<20;
 
         // std::cout << "Scan start: " << FilesPerLevel(db, 0) << "\n";
 
@@ -1038,7 +1039,7 @@ void TestMixWorkloadWithDiffThread() {
       op_count_list[idx]++;
       op_count_.fetch_add(1, std::memory_order_relaxed);
     }
-    std::cout<<"Thread: " << idx <<", Write:Read:Scan (" 
+    std::cout<<"Thread: " << idx <<", Write:Read:Scan:BaseScan (" 
       << w_count<<", "<<r_count<<", " << scan_count << ", " << scan_base_count << ")\n";
   };
   
@@ -1127,6 +1128,7 @@ void TestMixWorkloadWithDiffThread() {
   std::cout << "Read: " << hist_[kRead]->ToString() << "\n";
   std::cout << "Write: " << hist_[kWrite]->ToString() << "\n";
   std::cout << "Scan: " << hist_[kScan]->ToString() << "\n";
+  std::cout << "Scanbase: " << hist_[kScanBase]->ToString() << "\n";
   // std::cout << "TailRead: " << hist_[kTailRead]->ToString() << "\n";
   // std::cout << "TailReadCPU: " << hist_[kTailReadCPU]->ToString() << "\n";
   // std::cout << "TailReadIO: " << hist_[kTailReadIO]->ToString() << "\n";
