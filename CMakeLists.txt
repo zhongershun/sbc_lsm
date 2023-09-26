@@ -1633,6 +1633,17 @@ if(WITH_BENCHMARK)
   add_subdirectory(${PROJECT_SOURCE_DIR}/microbench/)
 endif()
 
+add_executable(ycsb
+  YCSB-cpp/rocksdb/rocksdb_db.cc
+  YCSB-cpp/core/acknowledged_counter_generator.cc
+  YCSB-cpp/core/basic_db.cc
+  YCSB-cpp/core/core_workload.cc
+  YCSB-cpp/core/db_factory.cc
+  YCSB-cpp/core/measurements.cc
+  YCSB-cpp/core/ycsbc.cc)
+target_link_libraries(ycsb
+${ROCKSDB_LIB} -lpthread)
+
 add_executable(block_based_table_reader_meta_test table/block_based_table_reader_meta_test.cc)
 target_compile_definitions(block_based_table_reader_meta_test PRIVATE DISP_BLOCK_KEY)
 target_link_libraries(block_based_table_reader_meta_test ${ROCKSDB_LIB} -lpthread gtest testharness)
