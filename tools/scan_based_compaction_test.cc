@@ -52,7 +52,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 10, ""); 
+DEFINE_int32(workloads, 11, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -1443,112 +1443,6 @@ void TestScanSBCCompactionLoad() {
     InsertData(options_ins, DBPath, key_num, &hist_, nullptr, FLAGS_key_range);
   }
 
-  DB* db = nullptr;
-  Options options;
-  options.num_levels = 2;
-  options.use_direct_reads = true;
-  options.disable_auto_compactions = true;
-  options.use_direct_io_for_flush_and_compaction = true;
-
-  if(FLAGS_cache_size > 0) {
-    std::shared_ptr<Cache> cache = NewLRUCache(FLAGS_cache_size);
-    BlockBasedTableOptions table_options;
-    table_options.block_cache = cache;
-    options.table_factory.reset(NewBlockBasedTableFactory(table_options));
-  }
-
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  // 绑定CPU核心
-  for (int i = 0; i < FLAGS_core_num; i++) {
-    CPU_SET(i, &cpuset);
-  }
-  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
-  auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, int idx, std::vector<std::string> *key_all = nullptr) {
-    auto s = DB::Open(options_, DBPath_, &db_);
-    assert(s.ok());
-    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
-    auto iter = db_->NewIterator(ReadOptions());
-    auto start_ = std::chrono::system_clock::now();
-    uint64_t key_cnt = 0;
-    iter->SeekToFirst();
-    while(iter->Valid()) {
-      if(key_all) {
-        auto k = iter->key().ToString();
-        key_all->emplace_back(k);
-      }
-      iter->Next();
-      key_cnt++;
-    }
-    auto end_ = std::chrono::system_clock::now();
-    static_cast<DBImpl*>(db_)->WaitForCompact(1);
-    delete iter;
-    delete db_;
-    std::cout << "Scan" << idx << " duration: " 
-      << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-      << ", Key cnt:" << key_cnt << "\n";
-  };
-
-  auto SBC = [](DB* db_, std::string DBPath_, Options options_, std::string key_start, std::string key_end, bool comp_l0 = false) {
-    options_.enable_sbc = true;
-    auto s = DB::Open(options_, DBPath_, &db_);
-    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
-
-    auto start_ = std::chrono::system_clock::now();
-    auto sbc_read_opt = ReadOptions();
-    Iterator *iter = nullptr;
-    if(comp_l0) {
-      iter = db_->NewSBCIterator(sbc_read_opt, nullptr, nullptr);
-    } else {
-      iter = db_->NewSBCIterator(sbc_read_opt, &key_start, &key_end);
-    }
-
-    assert(iter->status().ok());
-    assert(db_->IsCompacting());
-    auto key_cnt = 0;
-    for(iter->SeekToFirst();iter->Valid();iter->SBCNext()) {
-      key_cnt++;
-    }
-    auto end_ = std::chrono::system_clock::now();
-    db_->FinishSBC(iter);
-    assert(!db_->IsCompacting());
-    
-    std::cout << "SBC finished table num: " << FilesPerLevel(db_, 0) 
-      << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-      << ", Key cnt:" << key_cnt << "\n";
-    delete db_;
-  };
-
-  auto CompactionRange = [](DB* db_, std::string DBPath_, Options options_) {
-    auto s = DB::Open(options_, DBPath_, &db_);
-    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
-
-    auto start_ = std::chrono::system_clock::now();
-
-    db_->CompactRange(CompactRangeOptions(), nullptr, nullptr);    
-    
-    auto end_ = std::chrono::system_clock::now();
-    assert(!db_->IsCompacting());
-    
-    std::cout << "Major compaction finished table num: " << FilesPerLevel(db_, 0) 
-      << "\nDuration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-      << "\n";
-    delete db_;
-  };
-
-  // ----------------- 把数据从头到尾scan一遍 -----------------------
-  UNUSED(ScanDB);
-  // ScanDB(db, DBPath, options, 1);
-
-  // ------------------------- SBC ------------------------------
-  UNUSED(SBC);
-  // SBC(db, DBPath, options, "", "", true);
-
-  // ------------------------- SBC ------------------------------
-  UNUSED(CompactionRange);
-  // CompactionRange(db, DBPath, options);
-
 }
 
 
@@ -1645,8 +1539,6 @@ void TestScanSBCCompaction() {
       auto end_next = std::chrono::system_clock::now();
       key_cnt++;
       hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
-      
-      key_cnt++;
     }
     auto end_ = std::chrono::system_clock::now();
     static_cast<DBImpl*>(db_)->WaitForCompact(1);
@@ -1880,6 +1772,77 @@ void TestScanSBCCompaction() {
   // ScanDB(db, DBPath, options, 2);
 }
 
+
+void TestDatabase() {
+  std::string db_path = "/zyn/NVMe/zyn/coroutine_lsm/test_databases/ycsb-sbc-100GB";
+  
+  auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, size_t length, std::vector<std::string> *key_all = nullptr) {
+    auto s = DB::Open(options_, DBPath_, &db_);
+    if(s != Status::OK()) {
+      std::cout << s.ToString() << "\n";
+    }
+    assert(s.ok());
+    std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
+    auto read_opt = ReadOptions();
+    read_opt.fast_scan = FLAGS_fast_scan;
+    // read_opt.readahead_size = 2 << 20;
+
+    auto hist_next = std::make_shared<HistogramImpl>();
+
+    options_.statistics.reset();
+
+    auto iter = db_->NewIterator(read_opt);
+    auto start_ = std::chrono::system_clock::now();
+    uint64_t key_cnt = 0;
+    iter->SeekToFirst();
+    while(iter->Valid()) {
+      auto start_next = std::chrono::system_clock::now();
+      iter->Next();
+      auto end_next = std::chrono::system_clock::now();
+      key_cnt++;
+      hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
+      if(key_cnt >= length) {
+        break;
+      }
+      // std::cout << iter->key().ToString() << " " << iter->key().size() << "\n";
+    }
+    auto end_ = std::chrono::system_clock::now();
+    static_cast<DBImpl*>(db_)->WaitForCompact(1);
+    delete iter;
+    delete db_;
+    std::cout << "Scan length: " << length << " duration: " 
+      << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
+      << ", Key cnt:" << key_cnt << "\n"
+      << "Next\n" << hist_next->ToString() << "\n";
+  };
+
+  DB* db = nullptr;
+  Options options;
+  options.report_bg_io_stats = true;
+  options.use_direct_reads = true;
+  options.disable_auto_compactions = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+
+  auto s = DB::Open(options, db_path, &db);
+
+  size_t data_size = 128 << 20;
+  
+  if(s.ok()) {
+    std::cout << "\nInit table num: " << FilesPerLevel(db, 0) << "\n";
+
+  } else {
+    std::cout << s.ToString() << "\n";
+  }
+
+  // size_t length = 100000;
+  // for (size_t i = 0; i < 3; i++) {
+  //   ScanDB(db, db_path, options, length);
+  //   length <<= 2;
+  // }
+  
+  
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 
@@ -1910,6 +1873,8 @@ int main(int argc, char** argv) {
     rocksdb::TestScanSBCCompactionLoad();
   } else if(FLAGS_workloads == 10) {
     rocksdb::TestScanSBCCompaction();
+  } else if(FLAGS_workloads == 11) {
+    rocksdb::TestDatabase();
   } else {
     std::cout << "Error workload: " << FLAGS_workloads <<" workload\n";
   }

@@ -354,6 +354,7 @@ void TestMixWorkload() {
   options.use_direct_reads = true;
   options.disable_auto_compactions = FLAGS_disable_auto_compactions;
   options.level0_slowdown_writes_trigger = FLAGS_l0_stalling_limit;
+  options.compression_opts.parallel_threads
   std::atomic<int64_t> op_count_;
   size_t op_count_list[100];
   std::vector<std::vector<uint64_t>> log_[100];

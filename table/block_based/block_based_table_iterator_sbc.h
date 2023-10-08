@@ -19,6 +19,7 @@ namespace ROCKSDB_NAMESPACE {
 // Iterates over the contents of BlockBasedTable.
 
 constexpr size_t kKVBufferSize = 1024;
+constexpr size_t kKeyBufferSize = 32 * kKVBufferSize;
 
 class KVQueue {
 public:
@@ -91,7 +92,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         kv_queue_(),
         queue_size_(kKVBufferSize),
         block_start_offset_(0) {
-          key_buf_.reserve(queue_size_*21 + 100);
+          key_buf_.reserve(kKeyBufferSize + 100);
         }
 
   ~BlockBasedTableIteratorSBC() {
@@ -126,6 +127,9 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   Slice key() const override {
     assert(Valid());
     if (!kv_queue_.empty()) {
+      if(kv_queue_.front().first.data_[0] != 'u') {
+        std::cout << "KVQueue size: " << kv_queue_.size()  << " Key " << kv_queue_.front().first.data() << "\n";
+      }
       return kv_queue_.front().first;
     } else {
       return block_iter_.key();

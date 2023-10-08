@@ -6,6 +6,8 @@
 //  Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 //
 
+#include <iostream>
+
 #include "rocksdb_db.h"
 
 #include "YCSB-cpp/core/core_workload.h"
@@ -18,6 +20,7 @@
 #include <rocksdb/status.h>
 #include <rocksdb/utilities/options_util.h>
 #include <rocksdb/write_batch.h>
+#include <db/db_impl/db_impl.h>
 
 namespace {
   const std::string PROP_NAME = "rocksdb.dbname";
@@ -104,6 +107,21 @@ namespace {
   const std::string PROP_FS_URI = "rocksdb.fs_uri";
   const std::string PROP_FS_URI_DEFAULT = "";
 
+  const std::string PROP_MAX_BYTES_FOR_LEVEL_MULTIPLIER = "rocksdb.max_bytes_for_level_multiplier";
+  const std::string PROP_MAX_BYTES_FOR_LEVEL_MULTIPLIER_DEFAULT = "10";
+
+  const std::string PROP_ENABLE_SBC = "rocksdb.enable_sbc";
+  const std::string PROP_ENABLE_SBC_DEFAULT = "false";
+
+  const std::string PROP_USE_SBC_BUFFER = "rocksdb.use_sbc_buffer";
+  const std::string PROP_USE_SBC_BUFFER_DEFAULT = "0";
+
+  const std::string PROP_FAST_SCAN = "rocksdb.fast_scan";
+  const std::string PROP_FAST_SCAN_DEFAULT = "false";
+
+  const std::string PROP_COMPACTION_WITH_FAST_SCAN = "rocksdb.compaction_with_fast_scan";
+  const std::string PROP_COMPACTION_WITH_FAST_SCAN_DEFAULT = "false";
+
   static std::shared_ptr<rocksdb::Env> env_guard;
   static std::shared_ptr<rocksdb::Cache> block_cache;
 #if ROCKSDB_MAJOR < 8
@@ -116,6 +134,7 @@ namespace ycsbc {
 rocksdb::DB *RocksdbDB::db_ = nullptr;
 int RocksdbDB::ref_cnt_ = 0;
 std::mutex RocksdbDB::mu_;
+rocksdb::ReadOptions read_opt_;
 
 void RocksdbDB::Init() {
 // merge operator disabled by default due to link error
@@ -216,10 +235,13 @@ void RocksdbDB::Init() {
   if (!s.ok()) {
     throw utils::Exception(std::string("RocksDB Open: ") + s.ToString());
   }
+  std::cout << "Table num per level init: " << DisplayDB() << "\n";
 }
 
 void RocksdbDB::Cleanup() {
+  static_cast<rocksdb::DBImpl*>(db_)->WaitForCompact(1);
   const std::lock_guard<std::mutex> lock(mu_);
+  std::cout << "Table num per level finished: " << DisplayDB() << "\n";
   if (--ref_cnt_) {
     return;
   }
@@ -319,6 +341,16 @@ void RocksdbDB::GetOptions(const utils::Properties &props, rocksdb::Options *opt
       opt->level0_stop_writes_trigger = val;
     }
 
+    val = std::stoi(props.GetProperty(PROP_MAX_BYTES_FOR_LEVEL_MULTIPLIER, PROP_MAX_BYTES_FOR_LEVEL_MULTIPLIER_DEFAULT));
+    if (val != 10) {
+      opt->max_bytes_for_level_multiplier = val;
+    }
+
+    val = std::stoi(props.GetProperty(PROP_USE_SBC_BUFFER, PROP_USE_SBC_BUFFER_DEFAULT));
+    if (val != 0) {
+      opt->use_sbc_buffer = val;
+    }
+
     if (props.GetProperty(PROP_USE_DIRECT_WRITE, PROP_USE_DIRECT_WRITE_DEFAULT) == "true") {
       opt->use_direct_io_for_flush_and_compaction = true;
     }
@@ -330,6 +362,16 @@ void RocksdbDB::GetOptions(const utils::Properties &props, rocksdb::Options *opt
     }
     if (props.GetProperty(PROP_USE_MMAP_READ, PROP_USE_MMAP_READ_DEFAULT) == "true") {
       opt->allow_mmap_reads = true;
+    }
+    if (props.GetProperty(PROP_ENABLE_SBC, PROP_ENABLE_SBC_DEFAULT) == "true") {
+      opt->enable_sbc = true;
+    }
+    if (props.GetProperty(PROP_COMPACTION_WITH_FAST_SCAN, PROP_COMPACTION_WITH_FAST_SCAN_DEFAULT) == "true") {
+      opt->compaction_with_fast_scan = true;
+    }
+
+    if(props.GetProperty(PROP_FAST_SCAN, PROP_FAST_SCAN_DEFAULT) == "true") {
+      read_opt_.fast_scan = true;
     }
 
     rocksdb::BlockBasedTableOptions table_options;
@@ -443,7 +485,8 @@ DB::Status RocksdbDB::ReadSingle(const std::string &table, const std::string &ke
 DB::Status RocksdbDB::ScanSingle(const std::string &table, const std::string &key, int len,
                                  const std::vector<std::string> *fields,
                                  std::vector<std::vector<Field>> &result) {
-  rocksdb::Iterator *db_iter = db_->NewIterator(rocksdb::ReadOptions());
+  
+  rocksdb::Iterator *db_iter = db_->NewIterator(read_opt_);
   db_iter->Seek(key);
   for (int i = 0; db_iter->Valid() && i < len; i++) {
     std::string data = db_iter->value().ToString();

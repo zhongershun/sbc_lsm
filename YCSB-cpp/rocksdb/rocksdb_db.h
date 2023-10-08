@@ -16,6 +16,48 @@
 
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
+#include <util/string_util.h>
+
+namespace {
+
+std::string NumberToString(uint64_t num) {
+  std::string r;
+  rocksdb::AppendNumberTo(&r, num);
+  return r;
+}
+
+std::string FilesPerLevel(rocksdb::DB *db_, int cf) {
+  auto NumTableFilesAtLevel = [&](int level, int cf_) {
+    std::string property;
+    if (cf_ == 0) {
+      // default cfd
+      (db_->GetProperty(
+          "rocksdb.num-files-at-level" + NumberToString(level), &property));
+    } else {
+      // (db_->GetProperty(
+      //     handles_[cf_], "rocksdb.num-files-at-level" + NumberToString(level),
+      //     &property));
+    }
+    return atoi(property.c_str());
+  };
+  int num_levels = db_->NumberLevels();
+      // (cf == 0) ? db_->NumberLevels() : db_->NumberLevels(handles_[1]);
+  std::string result;
+  size_t last_non_zero_offset = 0;
+  for (int level = 0; level < num_levels; level++) {
+    int f = NumTableFilesAtLevel(level, cf);
+    char buf[100];
+    snprintf(buf, sizeof(buf), "%s%d", (level ? "," : ""), f);
+    result += buf;
+    if (f > 0) {
+      last_non_zero_offset = result.size();
+    }
+  }
+  result.resize(last_non_zero_offset);
+  return result;
+}
+
+}
 
 namespace ycsbc {
 
@@ -48,6 +90,10 @@ class RocksdbDB : public DB {
 
   Status Delete(const std::string &table, const std::string &key) {
     return (this->*(method_delete_))(table, key);
+  }
+
+  std::string DisplayDB() {
+    return FilesPerLevel(db_, 0);
   }
 
  private:

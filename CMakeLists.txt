@@ -1633,6 +1633,11 @@ if(WITH_BENCHMARK)
   add_subdirectory(${PROJECT_SOURCE_DIR}/microbench/)
 endif()
 
+add_subdirectory(third_party/HdrHistogram_c)
+include_directories(third_party/HdrHistogram_c/include)
+add_compile_definitions(HDRMEASUREMENT)
+
+
 add_executable(ycsb
   YCSB-cpp/rocksdb/rocksdb_db.cc
   YCSB-cpp/core/acknowledged_counter_generator.cc
@@ -1641,8 +1646,9 @@ add_executable(ycsb
   YCSB-cpp/core/db_factory.cc
   YCSB-cpp/core/measurements.cc
   YCSB-cpp/core/ycsbc.cc)
+add_dependencies(ycsb hdr_histogram_static)
 target_link_libraries(ycsb
-${ROCKSDB_LIB} -lpthread)
+${ROCKSDB_LIB} -lpthread hdr_histogram_static)
 
 add_executable(block_based_table_reader_meta_test table/block_based_table_reader_meta_test.cc)
 target_compile_definitions(block_based_table_reader_meta_test PRIVATE DISP_BLOCK_KEY)

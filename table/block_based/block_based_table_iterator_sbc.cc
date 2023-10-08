@@ -78,7 +78,7 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block + 4096 - table_->get_rep()->first_key_start_block_offset;
   table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_, &scratch, &aligned_buf_, read_options_.rate_limiter_priority);
   scratch_ = data_block_.data_;
-  // std::cout << "LoadFile from: " << block_start_offset_ << " size: " << n;
+  // std::cout << "LoadFile from: " << block_start_offset_ << " size: " << n << "\n";
 
   {
     // Need to use the data block.
@@ -153,9 +153,10 @@ inline void BlockBasedTableIteratorSBC::LoadKVFromBlock() {
 
 void BlockBasedTableIteratorSBC::FillKVQueue() {
   key_buf_.clear();
-  while (block_iter_points_to_real_block_ && kv_queue_.size() < queue_size_) {
+  while (block_iter_points_to_real_block_ && kv_queue_.size() < queue_size_ && key_buf_.size() < kKeyBufferSize) {
     LoadKVFromBlock();
   }
+  // std::cout << "KVQueue size: " << kv_queue_.size() << "\n";
 }
 
 bool BlockBasedTableIteratorSBC::NextAndGetResult(IterateResult* result) {

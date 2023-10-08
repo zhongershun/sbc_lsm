@@ -106,6 +106,7 @@ struct ImmutableDBOptions {
   Logger* logger;
   std::shared_ptr<CompactionService> compaction_service;
   bool enforce_single_del_contracts;
+  bool enable_sbc;
   int use_sbc_buffer;
   bool compaction_with_fast_scan;
 
