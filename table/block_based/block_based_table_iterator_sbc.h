@@ -14,6 +14,8 @@
 
 #include <queue>
 
+// #define DISP_OFF
+
 namespace ROCKSDB_NAMESPACE {
 // NOTE: kForward only
 // Iterates over the contents of BlockBasedTable.
@@ -93,10 +95,14 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         queue_size_(kKVBufferSize),
         block_start_offset_(0) {
           key_buf_.reserve(kKeyBufferSize + 100);
+          scan_len = read_options_.scan_len;
+          aligned_buf_.reserve(10);
         }
 
   ~BlockBasedTableIteratorSBC() {
-    aligned_buf_.reset();
+    for (auto &&i : aligned_buf_) {
+      i.reset();
+    }
   }
 
   void Seek(const Slice& target) override;
@@ -128,7 +134,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
     assert(Valid());
     if (!kv_queue_.empty()) {
       if(kv_queue_.front().first.data_[0] != 'u') {
-        std::cout << "KVQueue size: " << kv_queue_.size()  << " Key " << kv_queue_.front().first.data() << "\n";
+        // std::cout << "KVQueue size: " << kv_queue_.size()  << " Key " << kv_queue_.front().first.data() << "\n";
       }
       return kv_queue_.front().first;
     } else {
@@ -209,7 +215,7 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         block_iter_.DelegateCleanupsTo(pinned_iters_mgr_);
       }
       block_iter_.Invalidate(Status::OK());
-      delete block_;
+      // delete block_;
       block_iter_points_to_real_block_ = false;
       // std::cout << "ResetBlock: " << index_iter_->value().handle.offset() << "\n\n";
     }
@@ -243,6 +249,32 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
         index_iter_->SetReadaheadState(readahead_file_info);
       }
     }
+  }
+
+  void LoadDataFromFile() {
+    IOOptions opts;
+    char scratch;
+    table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
+
+    block_start_offset_ = index_iter_->value().handle.offset();
+    
+    size_t n = table_->get_rep()->last_key_block_offset 
+      + table_->get_rep()->last_key_offset_in_block + 5000 
+      - block_start_offset_;
+    if(read_options_.readahead_size) {
+      n = read_options_.readahead_size;
+    }
+
+    aligned_buf_.emplace_back(rocksdb::AlignedBuf());
+    table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_buffer_, 
+      &scratch, &aligned_buf_.back(), read_options_.rate_limiter_priority);
+    
+    scratch_ = data_block_buffer_.data_;
+    left_ = data_block_buffer_.size();
+#ifdef DISP_OFF
+    std::cout << "LoadFile from: " << block_start_offset_ << " size: " 
+      << n << " Scan len: " << scan_len << "\n";
+#endif
   }
 
   std::unique_ptr<InternalIteratorBase<IndexValue>> index_iter_;
@@ -316,11 +348,13 @@ class BlockBasedTableIteratorSBC : public InternalIteratorBase<Slice> {
   KVQueue kv_queue_;
   size_t queue_size_;
   std::string key_buf_;
-  Slice data_block_;
+  Slice data_block_buffer_;
   size_t block_start_offset_;  // 这是读到aligned_buf_里第一个block在文件里的偏移地址
-  const char* scratch_ = nullptr;
-  AlignedBuf aligned_buf_;   // 所有block的数据，加上block_start_offset_才是在文件里的真实偏移
+  const char* scratch_ = nullptr; // 指向datablock Buffer的指针，block在文件里的真实偏移 - block_start_offset_才是在buffer里的偏移
+  std::vector<AlignedBuf> aligned_buf_;   // 所有读到内存里的data block的数据，
   Block* block_ = nullptr;
+  size_t scan_len = INT64_MAX;
+  size_t left_ = 0;
 
   void LoadKVFromBlock();
 

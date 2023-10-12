@@ -1716,6 +1716,9 @@ struct ReadOptions {
   // Default: false
   bool fast_scan;
 
+  // Default: INT64_MAX
+  size_t scan_len;
+
   ReadOptions();
   ReadOptions(bool cksum, bool cache);
 };

@@ -135,6 +135,7 @@ rocksdb::DB *RocksdbDB::db_ = nullptr;
 int RocksdbDB::ref_cnt_ = 0;
 std::mutex RocksdbDB::mu_;
 rocksdb::ReadOptions read_opt_;
+size_t value_size = 1200;
 
 void RocksdbDB::Init() {
 // merge operator disabled by default due to link error
@@ -374,6 +375,11 @@ void RocksdbDB::GetOptions(const utils::Properties &props, rocksdb::Options *opt
       read_opt_.fast_scan = true;
     }
 
+    value_size = std::stoi(props.GetProperty(CoreWorkload::FIELD_COUNT_PROPERTY
+            , CoreWorkload::FIELD_COUNT_DEFAULT)) * std::stoi(
+              props.GetProperty(CoreWorkload::FIELD_LENGTH_PROPERTY, CoreWorkload::FIELD_LENGTH_DEFAULT));
+    value_size += 256;
+
     rocksdb::BlockBasedTableOptions table_options;
     size_t cache_size = std::stoul(props.GetProperty(PROP_CACHE_SIZE, PROP_CACHE_SIZE_DEFAULT));
     if (cache_size > 0) {
@@ -485,7 +491,10 @@ DB::Status RocksdbDB::ReadSingle(const std::string &table, const std::string &ke
 DB::Status RocksdbDB::ScanSingle(const std::string &table, const std::string &key, int len,
                                  const std::vector<std::string> *fields,
                                  std::vector<std::vector<Field>> &result) {
-  
+  read_opt_.readahead_size = len * value_size + 5000;
+  read_opt_.scan_len = len;
+  // std::cout << "Readahead size: " << read_opt_.readahead_size 
+  //   << "len: " << len << "\n";
   rocksdb::Iterator *db_iter = db_->NewIterator(read_opt_);
   db_iter->Seek(key);
   for (int i = 0; db_iter->Valid() && i < len; i++) {

@@ -705,7 +705,8 @@ ReadOptions::ReadOptions()
       adaptive_readahead(false),
       async_io(false),
       optimize_multiget_for_io(true),
-      fast_scan(false) {}
+      fast_scan(false),
+      scan_len(INT64_MAX) {}
 
 ReadOptions::ReadOptions(bool cksum, bool cache)
     : snapshot(nullptr),

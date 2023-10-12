@@ -1410,7 +1410,6 @@ Block::Block(BlockContents&& contents, size_t read_amp_bytes_per_bit,
       restart_offset_(0),
       num_restarts_(0) {
   TEST_SYNC_POINT("Block::Block:0");
-  // std::cout << "Init block content: " << contents_.data.data() << " " << contents_.data.size() << "\n";
 
   if (size_ < sizeof(uint32_t)) {
     size_ = 0;  // Error marker
@@ -1425,6 +1424,7 @@ Block::Block(BlockContents&& contents, size_t read_amp_bytes_per_bit,
           // The size is too small for NumRestarts() and therefore
           // restart_offset_ wrapped around.
           size_ = 0;
+          std::cout << "Init block content: " << contents_.data.data() << " " << contents_.data.size() << "\n";
           abort();
         }
         break;

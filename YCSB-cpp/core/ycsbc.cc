@@ -231,13 +231,14 @@ int main(const int argc, const char *argv[]) {
 void ParseCommandLine(int argc, const char *argv[], ycsbc::utils::Properties &props) {
   int argindex = 1;
   if (argc == 1) {
-    props.SetProperty("doload", "true");
+    props.SetProperty("dotransaction", "true");
     props.SetProperty("dbname", "rocksdb");
     std::ifstream input1("/zyn/NVMe/zyn/coroutine_lsm/YCSB-cpp/workloads/workloade");
     std::ifstream input2("/zyn/NVMe/zyn/coroutine_lsm/YCSB-cpp/rocksdb/rocksdb_sbc_dbg.properties");
     props.Load(input1);
     props.Load(input2);
     props.SetProperty("recordcount", "1000000");
+    props.SetProperty("operationcount", "3000");
   }
   while (argindex < argc && StrStartWith(argv[argindex], "-")) {
     if (strcmp(argv[argindex], "-load") == 0) {

@@ -69,17 +69,6 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   IndexValue v = index_iter_->value();
   const bool same_block = block_iter_points_to_real_block_ &&
                           v.handle.offset() == prev_block_offset_;
-  
-  // 一次读一堆数据上来
-  IOOptions opts;
-  char scratch;
-  table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
-  block_start_offset_ = table_->get_rep()->first_key_start_block_offset;
-  size_t n = table_->get_rep()->last_key_block_offset + table_->get_rep()->last_key_offset_in_block + 4096 - table_->get_rep()->first_key_start_block_offset;
-  table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_, &scratch, &aligned_buf_, read_options_.rate_limiter_priority);
-  scratch_ = data_block_.data_;
-  // std::cout << "LoadFile from: " << block_start_offset_ << " size: " << n << "\n";
-
   {
     // Need to use the data block.
     if (!same_block) {
@@ -153,8 +142,16 @@ inline void BlockBasedTableIteratorSBC::LoadKVFromBlock() {
 
 void BlockBasedTableIteratorSBC::FillKVQueue() {
   key_buf_.clear();
-  while (block_iter_points_to_real_block_ && kv_queue_.size() < queue_size_ && key_buf_.size() < kKeyBufferSize) {
+  BlockHandle data_block_handle = index_iter_->value().handle;
+  
+  while (block_iter_points_to_real_block_ 
+    && kv_queue_.size() < queue_size_ 
+    && key_buf_.size() < kKeyBufferSize) {
     LoadKVFromBlock();
+    // Buffer里最后一个Block读完，停止填充queue
+    if(left_ < (data_block_handle.size() + BlockBasedTable::kBlockTrailerSize) && !block_iter_.Valid()) {
+      break;
+    }
   }
   // std::cout << "KVQueue size: " << kv_queue_.size() << "\n";
 }
@@ -202,6 +199,15 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
     // if(index_iter_->value().handle.offset() == 28449737) {
     //   system("pause");
     // }
+    if(left_ < data_block_handle.size() + BlockBasedTable::kBlockTrailerSize) {
+      LoadDataFromFile();
+    }
+    left_ -= (index_iter_->value().handle.size() + BlockBasedTable::kBlockTrailerSize);
+#ifdef DISP_OFF
+    std::cout << "InitBlockStart: " << index_iter_->value().handle.offset() << " "
+      << index_iter_->value().handle.size() << "Left: " << left_
+      << "\n";
+#endif
     table_->NewDataBlockIteratorFromBuffer<DataBlockIter>(
         read_options_, data_block_handle, &block_iter_, BlockType::kData,
         /*get_context=*/nullptr, &lookup_context_,
@@ -214,9 +220,6 @@ void BlockBasedTableIteratorSBC::InitDataBlock() {
       block_iter_.UpdateEndOffset(rep->last_key_offset_in_block);
     }
     block_iter_points_to_real_block_ = true;
-    // std::cout << "InitBlock: " << index_iter_->value().handle.offset() << " "
-    //   << rep->last_key_block_offset << " " << rep->last_key_offset_in_block
-    //   << "\n";
     
     prefetch_64(scratch_ + data_block_handle.offset() - block_start_offset_);
     CheckDataBlockWithinUpperBound();
