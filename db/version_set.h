@@ -191,6 +191,8 @@ class VersionStorageInfo {
   void ComputeCompactionScore(const ImmutableOptions& immutable_options,
                               const MutableCFOptions& mutable_cf_options);
 
+  void GetSBCLevelRange(int &start, int &end);
+
   // Estimate est_comp_needed_bytes_
   void EstimateCompactionBytesNeeded(
       const MutableCFOptions& mutable_cf_options);
@@ -722,6 +724,10 @@ class VersionStorageInfo {
   // If set to true, we will run consistency checks even if RocksDB
   // is compiled in release mode
   bool force_consistency_checks_;
+
+  int sbc_start_;
+  int sbc_end_;
+  int max_profile_;
 
   friend class Version;
   friend class VersionSet;

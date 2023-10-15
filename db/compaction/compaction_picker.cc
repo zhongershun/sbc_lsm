@@ -1001,24 +1001,18 @@ Compaction* CompactionPicker::SBCCompactRange(
     // Universal compaction with more than one level always compacts all the
     // files together to the last level.
     assert(vstorage->num_levels() > 1);
-    // DBImpl::CompactRange() set output level to be the last level
-    if (ioptions_.allow_ingest_behind) {
-      assert(output_level == vstorage->num_levels() - 2);
-    } else {
-      assert(output_level == vstorage->num_levels() - 1);
-    }
     // DBImpl::RunManualCompaction will make full range for universal compaction
     assert(begin != nullptr);
     assert(end != nullptr);
     *compaction_end = nullptr;
 
-    int start_level = 2; // FIXME: 这里暂时只考虑L2以上的合并
-    for (; start_level < vstorage->num_levels() &&
+    int start_level = input_level; 
+    for (; start_level < output_level &&
            vstorage->NumLevelFiles(start_level) == 0;
          start_level++) {
     }
 
-    if (start_level == vstorage->num_levels()) {
+    if (start_level == output_level) {
       return nullptr;
     }
     
@@ -1059,14 +1053,14 @@ Compaction* CompactionPicker::SBCCompactRange(
     }
 
     // TODO: 判断是否应该做合并
-    // 这里的判断依据是如果前几层的文件大小的和大于输出层的大小，那么就可以做合并
-    // 如果当前输出层较大，那么就选择上一层作为输出层
+    // 这里的判断依据是如果前几层的文件大小的和大于SBC上限，如果大于上限就从下往上丢弃数据
+    // 因为合并任务的堆积往往是自上而下的，上面的层次通常更加容易堆积任务
     for (int i = 0; i < output_level; i++) {
       level_size_sum[i] = level_size_sum[i-1] + level_size[i];
     }
 
-    int j=output_level - 1;
-    while (level_size_sum[j] < level_size[output_level] && j >= start_level) {
+    int j=output_level;
+    while (level_size_sum[j] > mutable_db_options.sbc_threshold_high && j >= start_level) {
       if(inputs.back().level == output_level) {
         inputs.pop_back();
       }

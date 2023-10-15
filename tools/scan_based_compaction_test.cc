@@ -52,7 +52,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 11, ""); 
+DEFINE_int32(workloads, 10, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -62,7 +62,7 @@ DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "SBC", "Scan, SBC, Compaction, ScanWithCache");
+DEFINE_string(operation, "Compaction", "Scan, SBC, Compaction, ScanWithCache");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer, 3 Put compaction result in buffer");
@@ -433,7 +433,8 @@ void TestSBCWithoutMetaCut() {
   std::string key_start = "key";
   std::string key_end = "key9";
   start_ = std::chrono::system_clock::now();
-  iter = db->NewSBCIterator(ReadOptions(), &key_start, &key_end);
+  ReadOptions read_opt;
+  iter = db->NewSBCIterator(read_opt, &key_start, &key_end);
   iter->Seek(key_start);
   for(;iter->Valid() && options.comparator->Compare(iter->key(), Slice(key_end)) < 0;iter->SBCNext()) {
   }
@@ -869,8 +870,8 @@ void TestSBCScanTable() {
   std::string key_start = "key";
   std::string key_end = "key9";
   start_ = std::chrono::system_clock::now();
-  iter = db->NewSBCIterator(ReadOptions(), nullptr, nullptr);
-  iter->SeekToFirst();
+  ReadOptions read_opt;
+  iter = db->NewSBCIterator(read_opt, nullptr, nullptr);  iter->SeekToFirst();
   for(;iter->Valid();iter->SBCNext()) {
   }
   end_ = std::chrono::system_clock::now();
@@ -887,7 +888,7 @@ void TestSBCScanTable() {
   key_start = "key";
   key_end = "key9";
   start_ = std::chrono::system_clock::now();
-  iter = db->NewSBCIterator(ReadOptions(), nullptr, nullptr);
+  iter = db->NewSBCIterator(read_opt, nullptr, nullptr);
   iter->SeekToFirst();
   for(;iter->Valid();iter->SBCNext()) {
   }
@@ -1172,6 +1173,7 @@ void TestSBCUniIterator() {
 
     auto start_ = std::chrono::system_clock::now();
     auto sbc_read_opt = ReadOptions();
+    sbc_read_opt.fast_scan = FLAGS_fast_scan;
     auto iter = db_->NewSBCIterator(sbc_read_opt, &key_start, &key_end);
     assert(iter->status().ok());
     assert(db_->IsCompacting());
@@ -1191,8 +1193,9 @@ void TestSBCUniIterator() {
   };
 
   // ----------------- 把数据从头到尾scan一遍 -----------------------
-  std::vector<std::string> key_all;
-  ScanDB(db, DBPath, options, 1, "key", "key9", &key_all);
+  UNUSED(ScanDB);
+  // std::vector<std::string> key_all;
+  ScanDB(db, DBPath, options, 1, "key", "key9");
 
   // ----------------- 把数据从头到尾scan一遍 -----------------------
   // ScanDB(db, DBPath, options, 2);
@@ -1548,7 +1551,7 @@ void TestScanSBCCompaction() {
     std::cout << "Scan" << idx << " duration: " 
       << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
       << ", Key cnt:" << key_cnt << "\n"
-      << "Seek duration: " << std::chrono::duration_cast<std::chrono::microseconds>(start_next_-start_).count()
+      << "Seek duration: " << std::chrono::duration_cast<std::chrono::microseconds>(start_next_-start_).count() 
       << ", Next\n" << hist_next->ToString() << "\n";
   };
 
@@ -1564,6 +1567,7 @@ void TestScanSBCCompaction() {
     
     auto sbc_read_opt = ReadOptions();
     sbc_read_opt.fast_scan = FLAGS_fast_scan;
+    // sbc_read_opt.readahead_size = 64ll << 20;
     Iterator *iter = nullptr;
     if(comp_l0) {
       iter = db_->NewSBCIterator(sbc_read_opt, nullptr, nullptr);
@@ -1576,7 +1580,9 @@ void TestScanSBCCompaction() {
     auto key_cnt = 0;
 
     auto start_ = std::chrono::system_clock::now();
-    for(iter->SeekToFirst();iter->Valid();) {
+    iter->SeekToFirst();
+    auto start_next_ = std::chrono::system_clock::now();
+    for(;iter->Valid();) {
       auto start_next = std::chrono::system_clock::now();
       iter->SBCNext();
       auto end_next = std::chrono::system_clock::now();
@@ -1591,16 +1597,17 @@ void TestScanSBCCompaction() {
     std::cout << "SBC finished table num: " << FilesPerLevel(db_, 0) 
       << "\nNext Duration: " << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
       << ", Key cnt:" << key_cnt << "\n" 
-      << "SBCNext\n" << hist_next->ToString() << "\n"
-      << "SBC compaction iter\n" << options_.statistics->getHistogramString(SBC_NEXT_LAT) << "\n"
-      << "Add key value buffer\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_BUFFER_LAT) << "\n"
-      << "Signal\n" << options_.statistics->getHistogramString(WAKEUP_WORKER_LAT) << "\n"
-      << "AddKeyValue\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_LAT) << "\n";
+      << "Seek duration: " << std::chrono::duration_cast<std::chrono::microseconds>(start_next_-start_).count() << "\n"
+      << "SBCNext\n" << hist_next->ToString() << "\n";
+      // << "SBC compaction iter\n" << options_.statistics->getHistogramString(SBC_NEXT_LAT) << "\n"
+      // << "Add key value buffer\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_BUFFER_LAT) << "\n"
+      // << "Signal\n" << options_.statistics->getHistogramString(WAKEUP_WORKER_LAT) << "\n"
+      // << "AddKeyValue\n" << options_.statistics->getHistogramString(ADD_KEY_VALUE_LAT) << "\n";
     delete db_;
   };
 
   auto CompactionRange = [](DB* db_, std::string DBPath_, Options options_) {
-    options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
+    // options_.use_sbc_buffer = FLAGS_use_sbc_buffer;
     options_.compaction_with_fast_scan = FLAGS_compaction_with_fast_scan;
     auto s = DB::Open(options_, DBPath_, &db_);
     std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
@@ -1798,18 +1805,23 @@ void TestDatabase() {
     // auto start_ = std::chrono::system_clock::now();
     uint64_t key_cnt = 0;
     iter->SeekToFirst();
-    while(iter->Valid()) {
-      auto start_next = std::chrono::system_clock::now();
-      iter->Next();
-      auto end_next = std::chrono::system_clock::now();
-      key_cnt++;
-      hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
-      if(key_cnt >= length) {
-        break;
-      }
-      // std::cout << iter->key().ToString() << " " << iter->key().size() << "\n";
-    }
+    std::cout << "First key: " << iter->key().ToString() << "\n";
+    iter->SeekToLast();
+    std::cout << "Last key: " << iter->key().ToString() << "\n";
+    // while(iter->Valid()) {
+    //   auto start_next = std::chrono::system_clock::now();
+    //   iter->Next();
+    //   auto end_next = std::chrono::system_clock::now();
+    //   key_cnt++;
+    //   hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
+    //   if(key_cnt >= length) {
+    //     break;
+    //   }
+    //   // std::cout << iter->key().ToString() << " " << iter->key().size() << "\n";
+    // }
     // auto end_ = std::chrono::system_clock::now();
+
+
     static_cast<DBImpl*>(db_)->WaitForCompact(1);
     delete iter;
     delete db_;
@@ -1828,7 +1840,7 @@ void TestDatabase() {
 
   size_t length = 1000;
   auto start_ = std::chrono::system_clock::now();
-  for (size_t i = 0; i < 100; i++) {
+  for (size_t i = 0; i < 1; i++) {
     ScanDB(db, db_path, options, length);
     // length <<= 2;
   }

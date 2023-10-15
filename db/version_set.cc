@@ -2085,7 +2085,10 @@ VersionStorageInfo::VersionStorageInfo(
       current_num_samples_(0),
       estimated_compaction_needed_bytes_(0),
       finalized_(false),
-      force_consistency_checks_(_force_consistency_checks) {
+      force_consistency_checks_(_force_consistency_checks),
+      sbc_start_(2),
+      sbc_end_(num_levels_-1),
+      max_profile_(0) {
   if (ref_vstorage != nullptr) {
     accumulated_file_size_ = ref_vstorage->accumulated_file_size_;
     accumulated_raw_key_size_ = ref_vstorage->accumulated_raw_key_size_;
@@ -3137,7 +3140,9 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
     estimated_compaction_needed_bytes_ = 0;
   }
 
-  // Level 1 and up.
+  uint64_t level_size_arr[10] = {0};
+  uint64_t cn[10] = {0};
+  // Level 1 and up.  Level 1-5
   uint64_t bytes_next_level = 0;
   for (int level = base_level(); level <= MaxInputLevel(); level++) {
     level_size = 0;
@@ -3155,6 +3160,7 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
       for (auto* f : files_[level]) {
         level_size += f->fd.GetFileSize();
       }
+      level_size_arr[level] = level_size;
     }
     if (level == base_level() && level0_compact_triggered) {
       // Add base level size to compaction if level0 compaction triggered.
@@ -3174,6 +3180,7 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
         for (auto* f : files_[level + 1]) {
           bytes_next_level += f->fd.GetFileSize();
         }
+        level_size_arr[level + 1] = bytes_next_level;
       }
       if (bytes_next_level > 0) {
         assert(level_size > 0);
@@ -3185,6 +3192,32 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
       }
     }
   }
+
+  for (int level = base_level(); level < num_levels_; level++) { 
+    cn[level] = std::max(0ul, 
+      (level_size_arr[level] - MaxBytesForLevel(level)) * (1 + level_size_arr[level + 1] / (1 + level_size_arr[level])));
+  }
+  int max_profile = 0;
+  int sbc_start = sbc_start_;
+  int sbc_end = sbc_end_;
+
+  for (int j = base_level(); j < num_levels_-1; j++) {
+    for(int k = j + 1; k < num_levels_; k++) {
+      int profile_ = 0;
+      for (int i = j; i < k; i++) {
+        profile_ += (cn[i] - level_size_arr[i]);
+      }
+      profile_ -= level_size_arr[k];
+      if(profile_ > max_profile) {
+        max_profile = profile_;
+        sbc_start = j;
+        sbc_end = k;
+      }
+    }
+  }
+  sbc_start_ = sbc_start;
+  sbc_end_ = sbc_end;
+  max_profile_ = max_profile;
 }
 
 namespace {
@@ -3398,6 +3431,11 @@ void VersionStorageInfo::ComputeCompactionScore(
   }
 
   EstimateCompactionBytesNeeded(mutable_cf_options);
+}
+
+void VersionStorageInfo::GetSBCLevelRange(int& start, int& end) {
+  start = sbc_start_;
+  end = sbc_end_;
 }
 
 void VersionStorageInfo::ComputeFilesMarkedForCompaction() {
@@ -4269,6 +4307,9 @@ const char* VersionStorageInfo::LevelSummary(
   }
   len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
                   "] max score %.2f", compaction_score_[0]);
+  
+  len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+                  " SBC Range[%d, %d], Profile: %d", sbc_start_, sbc_end_, max_profile_);
 
   if (!files_marked_for_compaction_.empty()) {
     snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,

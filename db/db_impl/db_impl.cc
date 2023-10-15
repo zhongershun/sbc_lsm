@@ -3400,7 +3400,7 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
 }
 
 // NOTE: 这里会判断是否创建合并任务，如果不能就创建一个普通迭代器。
-Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
+Iterator* DBImpl::NewSBCIterator(ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
   bool do_sbc = false;
@@ -3540,6 +3540,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
             manual->begin = begin_storage;
             end_storage->SetMaxPossibleForUserKey(Slice(*end));
             manual->end = end_storage;
+            cfd->current()->storage_info()->GetSBCLevelRange(manual->input_level, manual->output_level);
           }
 
           compaction = manual->cfd->SBCCompactRange(
@@ -3603,6 +3604,7 @@ Iterator* DBImpl::NewSBCIterator(const ReadOptions& options,
       if(do_sbc) {
         assert(compaction_job);
         compaction_job->CreateSBCIterator(internal_iter, &sbc_buffer_);
+        options.readahead_size = 0;
       }
     } else {
       CleanupSuperVersion(sv);

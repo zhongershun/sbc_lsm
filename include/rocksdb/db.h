@@ -828,13 +828,13 @@ class DB {
   virtual Iterator* NewIterator(const ReadOptions& options) {
     return NewIterator(options, DefaultColumnFamily());
   }
-  virtual Iterator* NewSBCIterator(const ReadOptions& options,
+  virtual Iterator* NewSBCIterator(ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) {
     abort();
     return nullptr;
   }
-  virtual Iterator* NewSBCIterator(const ReadOptions& options, 
+  virtual Iterator* NewSBCIterator(ReadOptions& options, 
                                  const std::string *begin, const std::string *end) {
     return NewSBCIterator(options, DefaultColumnFamily(), begin, end);
   }

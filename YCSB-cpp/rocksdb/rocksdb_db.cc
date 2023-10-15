@@ -188,6 +188,7 @@ void RocksdbDB::Init() {
     format_ = kSingleRow;
     method_read_ = &RocksdbDB::ReadSingle;
     method_scan_ = &RocksdbDB::ScanSingle;
+    method_scan_range_ = &RocksdbDB::ScanRange;
     method_update_ = &RocksdbDB::UpdateSingle;
     method_insert_ = &RocksdbDB::InsertSingle;
     method_delete_ = &RocksdbDB::DeleteSingle;
@@ -498,6 +499,40 @@ DB::Status RocksdbDB::ScanSingle(const std::string &table, const std::string &ke
   rocksdb::Iterator *db_iter = db_->NewIterator(read_opt_);
   db_iter->Seek(key);
   for (int i = 0; db_iter->Valid() && i < len; i++) {
+    std::string data = db_iter->value().ToString();
+    result.push_back(std::vector<Field>());
+    std::vector<Field> &values = result.back();
+    if (fields != nullptr) {
+      DeserializeRowFilter(values, data, *fields);
+    } else {
+      DeserializeRow(values, data);
+      assert(values.size() == static_cast<size_t>(fieldcount_));
+    }
+    db_iter->Next();
+  }
+  delete db_iter;
+  return kOK;
+}
+
+DB::Status RocksdbDB::ScanRangeSingle(const std::string &table,
+                                  const std::string &key_start,
+                                  const std::string &key_end,
+                                  const std::vector<std::string> *fields,
+                                  std::vector<std::vector<Field>> &result) {
+  const rocksdb::Slice scan_start_key(key_start);
+  const rocksdb::Slice scan_end_key(key_end);
+  if (key_start < key_end) {
+    read_opt_.iterate_lower_bound = &scan_start_key;
+    read_opt_.iterate_upper_bound = &scan_end_key;
+  } else {
+    read_opt_.iterate_lower_bound = &scan_end_key;
+    read_opt_.iterate_upper_bound = &scan_start_key;
+  }
+
+  rocksdb::Iterator *db_iter = db_->NewSBCIterator(
+      read_opt_, &key_start, &key_end);
+  db_iter->SeekToFirst();
+  for (int i = 0; db_iter->Valid(); i++) {
     std::string data = db_iter->value().ToString();
     result.push_back(std::vector<Field>());
     std::vector<Field> &values = result.back();

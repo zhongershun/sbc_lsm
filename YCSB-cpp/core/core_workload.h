@@ -35,6 +35,7 @@ enum Operation {
   SCAN_FAILED,
   READMODIFYWRITE_FAILED,
   DELETE_FAILED,
+  INSERT_RND,
   MAXOPTYPE
 };
 
@@ -98,6 +99,9 @@ class CoreWorkload {
   ///
   static const std::string INSERT_PROPORTION_PROPERTY;
   static const std::string INSERT_PROPORTION_DEFAULT;
+
+  static const std::string INSERT_RND_PROPERTY;
+  static const std::string INSERT_RND_DEFAULT; 
 
   ///
   /// The name of the property for the proportion of scan transactions.
@@ -210,6 +214,7 @@ class CoreWorkload {
   DB::Status TransactionScan(DB &db);
   DB::Status TransactionUpdate(DB &db);
   DB::Status TransactionInsert(DB &db);
+  DB::Status TransactionInsertRnd(DB &db);
 
   std::string table_name_;
   int field_count_;

@@ -336,7 +336,7 @@ class DBImpl : public DB {
   virtual Iterator* NewIterator(const ReadOptions& options,
                                 ColumnFamilyHandle* column_family) override;
   using DB::NewSBCIterator;
-  virtual Iterator* NewSBCIterator(const ReadOptions& options,
+  virtual Iterator* NewSBCIterator(ReadOptions& options,
                                  ColumnFamilyHandle* column_family, 
                                  const std::string *begin, const std::string *end) override;
   Status FinishSBC(Iterator* sbc_iter) override;

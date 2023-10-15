@@ -1407,6 +1407,8 @@ struct DBOptions {
   int use_sbc_buffer = 0;
 
   bool compaction_with_fast_scan = false;
+
+  size_t sbc_threshold_high = 1ll << 30;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

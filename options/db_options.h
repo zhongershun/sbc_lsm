@@ -140,6 +140,7 @@ struct MutableDBOptions {
   bool strict_bytes_per_sync;
   size_t compaction_readahead_size;
   int max_background_flushes;
+  size_t sbc_threshold_high;
 };
 
 #ifndef ROCKSDB_LITE

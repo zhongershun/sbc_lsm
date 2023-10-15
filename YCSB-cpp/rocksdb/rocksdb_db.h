@@ -80,6 +80,11 @@ class RocksdbDB : public DB {
     return (this->*(method_scan_))(table, key, len, fields, result);
   }
 
+  Status ScanRange(const std::string &table, const std::string &key_start, const std::string &key_end,
+              const std::vector<std::string> *fields, std::vector<std::vector<Field>> &result) {
+    return (this->*(method_scan_range_))(table, key_start, key_end, fields, result);
+  }
+
   Status Update(const std::string &table, const std::string &key, std::vector<Field> &values) {
     return (this->*(method_update_))(table, key, values);
   }
@@ -117,6 +122,9 @@ class RocksdbDB : public DB {
   Status ScanSingle(const std::string &table, const std::string &key, int len,
                     const std::vector<std::string> *fields,
                     std::vector<std::vector<Field>> &result);
+  Status ScanRangeSingle(const std::string &table, const std::string &key_start, 
+                    const std::string &key_end, const std::vector<std::string> *fields,
+                    std::vector<std::vector<Field>> &result);
   Status UpdateSingle(const std::string &table, const std::string &key,
                       std::vector<Field> &values);
   Status MergeSingle(const std::string &table, const std::string &key,
@@ -129,6 +137,9 @@ class RocksdbDB : public DB {
                                     const std::vector<std::string> *, std::vector<Field> &);
   Status (RocksdbDB::*method_scan_)(const std::string &, const std::string &,
                                     int, const std::vector<std::string> *,
+                                    std::vector<std::vector<Field>> &);
+  Status (RocksdbDB::*method_scan_range_)(const std::string &, const std::string &,
+                                    const std::string &, const std::vector<std::string> *,
                                     std::vector<std::vector<Field>> &);
   Status (RocksdbDB::*method_update_)(const std::string &, const std::string &,
                                       std::vector<Field> &);

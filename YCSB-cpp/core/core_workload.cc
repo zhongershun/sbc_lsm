@@ -65,6 +65,9 @@ const string CoreWorkload::UPDATE_PROPORTION_DEFAULT = "0.05";
 const string CoreWorkload::INSERT_PROPORTION_PROPERTY = "insertproportion";
 const string CoreWorkload::INSERT_PROPORTION_DEFAULT = "0.0";
 
+const string CoreWorkload::INSERT_RND_PROPERTY = "insertrnd";
+const string CoreWorkload::INSERT_RND_DEFAULT = "0.0";
+
 const string CoreWorkload::SCAN_PROPORTION_PROPERTY = "scanproportion";
 const string CoreWorkload::SCAN_PROPORTION_DEFAULT = "0.0";
 
@@ -120,6 +123,8 @@ void CoreWorkload::Init(const utils::Properties &p) {
   double readmodifywrite_proportion = std::stod(p.GetProperty(
       READMODIFYWRITE_PROPORTION_PROPERTY, READMODIFYWRITE_PROPORTION_DEFAULT));
 
+  double insert_rnd_proportion = std::stod(p.GetProperty(INSERT_RND_PROPERTY, INSERT_RND_DEFAULT));
+
   record_count_ = std::stoi(p.GetProperty(RECORD_COUNT_PROPERTY));
   std::string request_dist = p.GetProperty(REQUEST_DISTRIBUTION_PROPERTY,
                                            REQUEST_DISTRIBUTION_DEFAULT);
@@ -157,6 +162,9 @@ void CoreWorkload::Init(const utils::Properties &p) {
   }
   if (readmodifywrite_proportion > 0) {
     op_chooser_.AddValue(READMODIFYWRITE, readmodifywrite_proportion);
+  }
+  if(insert_rnd_proportion > 0) {
+    op_chooser_.AddValue(INSERT_RND, insert_rnd_proportion);
   }
 
   insert_key_sequence_ = new CounterGenerator(insert_start);
@@ -281,6 +289,9 @@ bool CoreWorkload::DoTransaction(DB &db) {
     case READMODIFYWRITE:
       status = TransactionReadModifyWrite(db);
       break;
+    case INSERT_RND:
+      status = TransactionInsertRnd(db);
+      break;
     default:
       throw utils::Exception("Operation request is not recognized!");
   }
@@ -322,6 +333,14 @@ DB::Status CoreWorkload::TransactionReadModifyWrite(DB &db) {
   return db.Update(table_name_, key, values);
 }
 
+DB::Status CoreWorkload::TransactionInsertRnd(DB &db) {
+  uint64_t key_num = NextTransactionKeyNum();
+  const std::string key = BuildKeyName(key_num);
+  std::vector<DB::Field> values;
+  BuildValues(values);
+  return db.Insert(table_name_, key, values);
+}
+
 DB::Status CoreWorkload::TransactionScan(DB &db) {
   uint64_t key_num = NextTransactionKeyNum();
   const std::string key = BuildKeyName(key_num);
@@ -335,6 +354,23 @@ DB::Status CoreWorkload::TransactionScan(DB &db) {
     return db.Scan(table_name_, key, len, NULL, result);
   }
 }
+
+// DB::Status CoreWorkload::TransactionScan(DB &db) {
+//   uint64_t key_num = NextTransactionKeyNum();
+//   uint64_t key_end_num = NextTransactionKeyNum();
+//   const std::string key_start = BuildKeyName(key_num);
+//   const std::string key_end = BuildKeyName(key_end_num);
+
+//   // int len = scan_len_chooser_->Next();
+//   std::vector<std::vector<DB::Field>> result;
+//   if (!read_all_fields()) {
+//     std::vector<std::string> fields;
+//     fields.push_back(NextFieldName());
+//     return db.ScanRange(table_name_, key_start, key_end, &fields, result);
+//   } else {
+//     return db.ScanRange(table_name_, key_start, key_end, NULL, result);
+//   }
+// }
 
 DB::Status CoreWorkload::TransactionUpdate(DB &db) {
   uint64_t key_num = NextTransactionKeyNum();

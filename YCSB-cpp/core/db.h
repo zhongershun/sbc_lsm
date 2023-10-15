@@ -68,6 +68,25 @@ class DB {
   virtual Status Scan(const std::string &table, const std::string &key,
                    int record_count, const std::vector<std::string> *fields,
                    std::vector<std::vector<Field>> &result) = 0;
+
+  ///
+  /// Performs a range scan for a set of records in the database.
+  /// Field/value pairs from the result are stored in a vector.
+  ///
+  /// @param table The name of the table.
+  /// @param key_start The key of the first record to read.
+  /// @param key_end The key of the last record to read.
+  /// @param fields The list of fields to read, or NULL for all of them.
+  /// @param result A vector of vector, where each vector contains field/value
+  ///        pairs for one record
+  /// @return Zero on success, or a non-zero error code on error.
+  ///
+  virtual Status ScanRange(const std::string &table, const std::string &key_start,
+                   const std::string &key_end, const std::vector<std::string> *fields,
+                   std::vector<std::vector<Field>> &result){
+    abort();
+  };
+
   ///
   /// Updates a record in the database.
   /// Field/value pairs in the specified vector are written to the record,

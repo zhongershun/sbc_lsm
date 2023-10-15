@@ -334,6 +334,8 @@ int main() {
   endif()
 endif()
 
+# list(APPEND THIRDPARTY_LIBS -luring)
+
 if (WITH_LIBURING)
   find_package(uring)
   if (uring_FOUND)
@@ -1665,3 +1667,7 @@ target_link_libraries(sbc_buffer_test ${ROCKSDB_LIB} -lpthread)
 # set_target_properties(block_based_table_reader_meta_test PROPERTIES COMPILE_DEFINITIONS DISP_BLOCK_KEY)
 
 # add_definitions(-DDISP_BLOCK_KEY)
+
+
+add_executable(test_io_uring util/test_io_uring.cc)
+target_link_libraries(test_io_uring -luring)
