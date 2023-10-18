@@ -68,6 +68,9 @@ const string CoreWorkload::INSERT_PROPORTION_DEFAULT = "0.0";
 const string CoreWorkload::INSERT_RND_PROPERTY = "insertrnd";
 const string CoreWorkload::INSERT_RND_DEFAULT = "0.0";
 
+const string CoreWorkload::SCAN_RANGE_PROPERTY = "scanrange";
+const string CoreWorkload::SCAN_RANGE_DEFAULT = "0.0";
+
 const string CoreWorkload::SCAN_PROPORTION_PROPERTY = "scanproportion";
 const string CoreWorkload::SCAN_PROPORTION_DEFAULT = "0.0";
 
@@ -78,7 +81,7 @@ const string CoreWorkload::REQUEST_DISTRIBUTION_PROPERTY = "requestdistribution"
 const string CoreWorkload::REQUEST_DISTRIBUTION_DEFAULT = "uniform";
 
 const string CoreWorkload::ZERO_PADDING_PROPERTY = "zeropadding";
-const string CoreWorkload::ZERO_PADDING_DEFAULT = "1";
+const string CoreWorkload::ZERO_PADDING_DEFAULT = "9";
 
 const string CoreWorkload::MIN_SCAN_LENGTH_PROPERTY = "minscanlength";
 const string CoreWorkload::MIN_SCAN_LENGTH_DEFAULT = "1";
@@ -125,6 +128,8 @@ void CoreWorkload::Init(const utils::Properties &p) {
 
   double insert_rnd_proportion = std::stod(p.GetProperty(INSERT_RND_PROPERTY, INSERT_RND_DEFAULT));
 
+  double scan_range_proportion = std::stod(p.GetProperty(SCAN_RANGE_PROPERTY, SCAN_RANGE_DEFAULT));
+
   record_count_ = std::stoi(p.GetProperty(RECORD_COUNT_PROPERTY));
   std::string request_dist = p.GetProperty(REQUEST_DISTRIBUTION_PROPERTY,
                                            REQUEST_DISTRIBUTION_DEFAULT);
@@ -165,6 +170,9 @@ void CoreWorkload::Init(const utils::Properties &p) {
   }
   if(insert_rnd_proportion > 0) {
     op_chooser_.AddValue(INSERT_RND, insert_rnd_proportion);
+  }
+  if(scan_range_proportion > 0) {
+    op_chooser_.AddValue(SCAN_RANGE, scan_range_proportion);
   }
 
   insert_key_sequence_ = new CounterGenerator(insert_start);
@@ -292,6 +300,9 @@ bool CoreWorkload::DoTransaction(DB &db) {
     case INSERT_RND:
       status = TransactionInsertRnd(db);
       break;
+    case SCAN_RANGE:
+      status = TransactionScanRange(db);
+      break;
     default:
       throw utils::Exception("Operation request is not recognized!");
   }
@@ -355,22 +366,23 @@ DB::Status CoreWorkload::TransactionScan(DB &db) {
   }
 }
 
-// DB::Status CoreWorkload::TransactionScan(DB &db) {
-//   uint64_t key_num = NextTransactionKeyNum();
-//   uint64_t key_end_num = NextTransactionKeyNum();
-//   const std::string key_start = BuildKeyName(key_num);
-//   const std::string key_end = BuildKeyName(key_end_num);
+DB::Status CoreWorkload::TransactionScanRange(DB &db) {
+  int len = scan_len_chooser_->Next();
+  len *= 2;
+  uint64_t key_num = NextTransactionKeyNum();
+  uint64_t key_end_num = key_num + len;
+  const std::string key_start = BuildKeyName(key_num);
+  const std::string key_end = BuildKeyName(key_end_num);
 
-//   // int len = scan_len_chooser_->Next();
-//   std::vector<std::vector<DB::Field>> result;
-//   if (!read_all_fields()) {
-//     std::vector<std::string> fields;
-//     fields.push_back(NextFieldName());
-//     return db.ScanRange(table_name_, key_start, key_end, &fields, result);
-//   } else {
-//     return db.ScanRange(table_name_, key_start, key_end, NULL, result);
-//   }
-// }
+  std::vector<std::vector<DB::Field>> result;
+  if (!read_all_fields()) {
+    std::vector<std::string> fields;
+    fields.push_back(NextFieldName());
+    return db.ScanRange(table_name_, key_start, key_end, len, &fields, result);
+  } else {
+    return db.ScanRange(table_name_, key_start, key_end, len, NULL, result);
+  }
+}
 
 DB::Status CoreWorkload::TransactionUpdate(DB &db) {
   uint64_t key_num = NextTransactionKeyNum();

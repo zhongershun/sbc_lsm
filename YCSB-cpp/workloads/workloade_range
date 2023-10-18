@@ -17,12 +17,11 @@ workload=com.yahoo.ycsb.workloads.CoreWorkload
 
 readallfields=false
 
-minscanlength=65536
-maxscanlength=1000000
 
 readproportion=0
 updateproportion=0
-scanproportion=0.95
+# scanproportion=0.95
+scanrange=0.95
 insertproportion=0.05
 
 requestdistribution=zipfian

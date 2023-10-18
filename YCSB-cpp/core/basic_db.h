@@ -30,6 +30,12 @@ class BasicDB : public DB {
   Status Scan(const std::string &table, const std::string &key, int len,
               const std::vector<std::string> *fields, std::vector<std::vector<Field>> &result);
 
+  Status ScanRange(const std::string &table, const std::string &key_start,
+                   const std::string &key_end, int len, const std::vector<std::string> *fields,
+                   std::vector<std::vector<Field>> &result) {
+    return kError;
+  }
+
   Status Update(const std::string &table, const std::string &key, std::vector<Field> &values);
 
   Status Insert(const std::string &table, const std::string &key, std::vector<Field> &values);

@@ -82,10 +82,8 @@ class DB {
   /// @return Zero on success, or a non-zero error code on error.
   ///
   virtual Status ScanRange(const std::string &table, const std::string &key_start,
-                   const std::string &key_end, const std::vector<std::string> *fields,
-                   std::vector<std::vector<Field>> &result){
-    abort();
-  };
+                   const std::string &key_end, int len, const std::vector<std::string> *fields,
+                   std::vector<std::vector<Field>> &result) = 0;
 
   ///
   /// Updates a record in the database.

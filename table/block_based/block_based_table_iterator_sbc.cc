@@ -51,9 +51,21 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
     return;
   }
 
-  bool need_seek_index = true;
+  size_t end_offset = table_->get_rep()->last_key_block_offset 
+      + table_->get_rep()->last_key_offset_in_block + 5000;
 
-  if (need_seek_index) {
+  if(read_options_.iterate_upper_bound != nullptr && 
+    user_comparator_.Compare(*read_options_.iterate_upper_bound,
+     table_->get_rep()->last_key) < 0) {
+    IterKey saved_key;
+    saved_key.SetInternalKey(*read_options_.iterate_upper_bound, 0, kValueTypeForSeek, nullptr);
+    index_iter_->Seek(saved_key.GetInternalKey());
+    if (index_iter_->Valid()) {
+      end_offset = index_iter_->value().handle.offset() + 5000;
+    }
+  }
+
+  {
     if (target) {
       index_iter_->Seek(*target);
     } else {
@@ -67,6 +79,23 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
   }
 
   IndexValue v = index_iter_->value();
+
+  IOOptions opts;
+  char scratch;
+  table_->get_rep()->file->PrepareIOOptions(read_options_, opts);
+
+  block_start_offset_ = v.handle.offset();
+  size_t n = end_offset - block_start_offset_;
+  aligned_buf_.emplace_back(rocksdb::AlignedBuf());
+  table_->get_rep()->file->Read(opts, block_start_offset_, n, &data_block_buffer_, 
+    &scratch, &aligned_buf_.back(), read_options_.rate_limiter_priority);
+  
+  scratch_ = data_block_buffer_.data_;
+  left_ = data_block_buffer_.size();
+
+  std::cout << "LoadFile from: " << block_start_offset_ << " size: " 
+      << n << " Scan len: " << data_block_buffer_.size() << "\n";
+
   const bool same_block = block_iter_points_to_real_block_ &&
                           v.handle.offset() == prev_block_offset_;
   {
@@ -95,11 +124,6 @@ void BlockBasedTableIteratorSBC::SeekImpl(const Slice* target,
       CheckDataBlockWithinUpperBound();
     }
 
-    if (target) {
-      block_iter_.Seek(*target);
-    } else {
-      block_iter_.SeekToFirst();
-    }
     FindKeyForward();
     key_buf_.clear();
     LoadKVFromBlock();
@@ -120,6 +144,7 @@ void BlockBasedTableIteratorSBC::Next() {
   // CheckOutOfBound();
 
   kv_queue_.pop();
+  prefetch_64(key().data() + key().size());
   if(kv_queue_.empty()) {
     FillKVQueue();
   }
@@ -283,8 +308,8 @@ void BlockBasedTableIteratorSBC::AsyncInitDataBlock(bool is_first_pass) {
 void BlockBasedTableIteratorSBC::FindKeyForward() {
   // This method's code is kept short to make it likely to be inlined.
 
-  assert(!is_out_of_bound_);
-  assert(block_iter_points_to_real_block_);
+  // assert(!is_out_of_bound_);
+  // assert(block_iter_points_to_real_block_);
 
   if (!block_iter_.Valid()) {
     // This is the only call site of FindBlockForward(), but it's extracted into

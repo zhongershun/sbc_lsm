@@ -54,6 +54,19 @@ class DBWrapper : public DB {
     }
     return s;
   }
+  Status ScanRange(const std::string &table, const std::string &key_start,
+                   const std::string &key_end, int len, const std::vector<std::string> *fields,
+                   std::vector<std::vector<Field>> &result) {
+    timer_.Start();
+    Status s = db_->ScanRange(table, key_start, key_end, len, fields, result);
+    uint64_t elapsed = timer_.End();
+    if (s == kOK) {
+      measurements_->Report(SCAN, elapsed);
+    } else {
+      measurements_->Report(SCAN_FAILED, elapsed);
+    }
+    return s;
+  }
   Status Update(const std::string &table, const std::string &key, std::vector<Field> &values) {
     timer_.Start();
     Status s = db_->Update(table, key, values);

@@ -52,7 +52,7 @@ DEFINE_int32(scan_rate, 100, "");
 DEFINE_int32(core_num, 4, "");
 DEFINE_int32(client_num, 10, "");
 DEFINE_int64(read_count, 100, "");
-DEFINE_int32(workloads, 10, ""); 
+DEFINE_int32(workloads, 11, ""); 
 DEFINE_int32(num_levels, 3, "");
 DEFINE_int32(disk_type, 1, "0 SSD, 1 NVMe");
 DEFINE_uint64(cache_size, 0, "");
@@ -62,7 +62,7 @@ DEFINE_int32(shortcut_cache, 0, "");
 DEFINE_int32(read_num, 1000000, "");
 DEFINE_bool(disableWAL, false, "");
 DEFINE_bool(disable_auto_compactions, true, "");
-DEFINE_string(operation, "Compaction", "Scan, SBC, Compaction, ScanWithCache");
+DEFINE_string(operation, "Scan", "Scan, SBC, Compaction, ScanWithCache");
 DEFINE_uint64(key_range, 100ll<<20, "");
 DEFINE_int32(interval, 1000, "Unit: millisecond");
 DEFINE_int32(use_sbc_buffer, 3, "0 disable, 1 KVBuffer, 2 File buffer, 3 Put compaction result in buffer");
@@ -1783,17 +1783,34 @@ void TestScanSBCCompaction() {
 
 
 void TestDatabase() {
-  std::string db_path = "/zyn/NVMe/zyn/coroutine_lsm/test_databases/ycsb-sbc-1GB-raw";
   
   auto ScanDB = [](DB* db_, std::string DBPath_, Options options_, size_t length, std::vector<std::string> *key_all = nullptr) {
+    auto BuildKeyName = [](uint64_t key_num) {
+      std::string prekey = "user";
+      std::string value = std::to_string(key_num);
+      int fill = std::max(0, 9 - static_cast<int>(value.size()));
+      return prekey.append(fill, '0').append(value);
+    };
+
     auto s = DB::Open(options_, DBPath_, &db_);
     if(s != Status::OK()) {
       std::cout << s.ToString() << "\n";
     }
     assert(s.ok());
     // std::cout << "\nInit table num: " << FilesPerLevel(db_, 0) << "\n";
+
+    length *= 2;
+    size_t start = 100000;
+    std::string start_key = BuildKeyName(start);
+    std::string end_key = BuildKeyName(start + length);
+
+    const Slice start_k(start_key);
+    const Slice end_k(end_key);
+
     auto read_opt = ReadOptions();
-    // read_opt.fast_scan = FLAGS_fast_scan;
+    read_opt.iterate_lower_bound = &start_k;
+    read_opt.iterate_upper_bound = &end_k;
+    read_opt.fast_scan = FLAGS_fast_scan;
     // read_opt.readahead_size = 1200 * length + 4000;
     // read_opt.scan_len = length;
 
@@ -1802,41 +1819,46 @@ void TestDatabase() {
     options_.statistics.reset();
 
     auto iter = db_->NewIterator(read_opt);
-    // auto start_ = std::chrono::system_clock::now();
+    auto start_ = std::chrono::system_clock::now();
     uint64_t key_cnt = 0;
     iter->SeekToFirst();
+    auto end_seek = std::chrono::system_clock::now();
     std::cout << "First key: " << iter->key().ToString() << "\n";
-    iter->SeekToLast();
-    std::cout << "Last key: " << iter->key().ToString() << "\n";
-    // while(iter->Valid()) {
-    //   auto start_next = std::chrono::system_clock::now();
-    //   iter->Next();
-    //   auto end_next = std::chrono::system_clock::now();
-    //   key_cnt++;
-    //   hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
-    //   if(key_cnt >= length) {
-    //     break;
-    //   }
-    //   // std::cout << iter->key().ToString() << " " << iter->key().size() << "\n";
-    // }
-    // auto end_ = std::chrono::system_clock::now();
 
+    while(iter->Valid()) {
+      auto start_next = std::chrono::system_clock::now();
+      iter->Next();
+      auto end_next = std::chrono::system_clock::now();
+      key_cnt++;
+      hist_next->Add(std::chrono::duration_cast<std::chrono::microseconds>(end_next-start_next).count());
+      if(key_cnt >= length) {
+        break;
+      }
+      // std::cout << iter->key().ToString() << " " << iter->key().size() << "\n";
+    }
+
+    auto end_ = std::chrono::system_clock::now();
+
+    // iter->SeekToLast();
+    std::cout << "Last key: " << iter->key().ToString() << "\n";
 
     static_cast<DBImpl*>(db_)->WaitForCompact(1);
     delete iter;
     delete db_;
-    // std::cout << "Scan length: " << length << " duration: " 
-    //   << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count() 
-    //   << ", Key cnt:" << key_cnt << "\n"
-    //   << "Next\n" << hist_next->ToString() << "\n";
+    std::cout << "Scan length: " << length << " duration: " 
+      << std::chrono::duration_cast<std::chrono::microseconds>(end_-start_).count()
+      << "\nSeek dur: " << std::chrono::duration_cast<std::chrono::microseconds>(end_seek-start_).count()
+      << ", Key cnt:" << key_cnt << "\n";
+      // << "Next\n" << hist_next->ToString() << "\n";
   };
-
+  UNUSED(ScanDB);
   DB* db = nullptr;
   Options options;
   options.report_bg_io_stats = true;
   options.use_direct_reads = true;
   options.disable_auto_compactions = true;
   options.use_direct_io_for_flush_and_compaction = true;
+  std::string db_path = "/zyn/NVMe/zyn/coroutine_lsm/test_databases/ycsb-RocksDB-1GB-raw";
 
   size_t length = 1000;
   auto start_ = std::chrono::system_clock::now();

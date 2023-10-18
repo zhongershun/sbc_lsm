@@ -188,7 +188,7 @@ void RocksdbDB::Init() {
     format_ = kSingleRow;
     method_read_ = &RocksdbDB::ReadSingle;
     method_scan_ = &RocksdbDB::ScanSingle;
-    method_scan_range_ = &RocksdbDB::ScanRange;
+    method_scan_range_ = &RocksdbDB::ScanRangeSingle;
     method_update_ = &RocksdbDB::UpdateSingle;
     method_insert_ = &RocksdbDB::InsertSingle;
     method_delete_ = &RocksdbDB::DeleteSingle;
@@ -517,23 +517,26 @@ DB::Status RocksdbDB::ScanSingle(const std::string &table, const std::string &ke
 DB::Status RocksdbDB::ScanRangeSingle(const std::string &table,
                                   const std::string &key_start,
                                   const std::string &key_end,
+                                  int len,
                                   const std::vector<std::string> *fields,
                                   std::vector<std::vector<Field>> &result) {
   const rocksdb::Slice scan_start_key(key_start);
   const rocksdb::Slice scan_end_key(key_end);
-  if (key_start < key_end) {
-    read_opt_.iterate_lower_bound = &scan_start_key;
-    read_opt_.iterate_upper_bound = &scan_end_key;
-  } else {
-    read_opt_.iterate_lower_bound = &scan_end_key;
-    read_opt_.iterate_upper_bound = &scan_start_key;
-  }
+  
+  read_opt_.iterate_lower_bound = &scan_start_key;
+  read_opt_.iterate_upper_bound = &scan_end_key;
+
+  read_opt_.readahead_size = len * value_size + 5000;
+  read_opt_.scan_len = len;
+
+  int cnt = 0;
 
   rocksdb::Iterator *db_iter = db_->NewSBCIterator(
       read_opt_, &key_start, &key_end);
   db_iter->SeekToFirst();
   for (int i = 0; db_iter->Valid(); i++) {
     std::string data = db_iter->value().ToString();
+    cnt++;
     result.push_back(std::vector<Field>());
     std::vector<Field> &values = result.back();
     if (fields != nullptr) {
@@ -544,7 +547,8 @@ DB::Status RocksdbDB::ScanRangeSingle(const std::string &table,
     }
     db_iter->Next();
   }
-  delete db_iter;
+  db_->FinishSBC(db_iter);
+  // std::cout << cnt << " " << len << " ["<< key_start << ", " << key_end << "]\n";
   return kOK;
 }
 
